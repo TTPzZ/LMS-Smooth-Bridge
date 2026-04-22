@@ -1,43 +1,50 @@
-LMS Smooth Bridge
-A middleman proxy server designed to optimize the user experience between the MindX LMS and a custom mobile application. This project resolves performance bottlenecks caused by excessive data exposure, automates authentication flows, and minimizes API payloads for mobile consumption.
+LMS Smooth Bridge (Proxy & Automation System)
+Overview
+LMS Smooth Bridge is a dedicated backend middleware system designed to optimize, automate, and extend the capabilities of the original LMS for a custom mobile application. Initially conceived to solve performance bottlenecks caused by heavy API payloads, the architecture is designed to scale into a multi-tenant platform supporting up to 30 instructors. It manages session states, filters redundant data, and introduces automation features like payroll tracking and AI-assisted student evaluations.
 
-Problem & Solution
-Problem: The original LMS GraphQL API returns oversized payloads (up to 4MB per request) containing redundant metadata and unnecessary PII. This causes severe lag and high memory consumption on mobile devices.
+Core Features
+Data Transformation (Payload Optimization): Intercepts massive GraphQL responses (up to 4MB) from the upstream LMS, strips out unnecessary metadata and PII, and delivers highly optimized JSON payloads (under 50KB) to ensure a fluid mobile experience.
 
-Solution: A Node.js proxy server that intercepts the LMS response, filters out all unnecessary data, and delivers a highly optimized, lightweight JSON payload (reducing size by ~90%) to the mobile client.
+Multi-Tenant Session Management: Securely handles authentication for multiple instructors. It stores encrypted refreshTokens in MongoDB and automatically negotiates with Firebase Auth to issue fresh idTokens upon expiration, eliminating the need for manual re-login.
 
-Technologies Used
-Backend: Node.js, TypeScript (Express or NestJS)
+Automated Payroll & Timesheets: Utilizes background cronjobs to periodically scan and aggregate completed teaching slots from the LMS. Data is cached locally to generate instant payroll reports and timesheets without repeatedly querying the original server.
 
-Database: MongoDB (Used for storing refreshToken, basic configurations, and temporary data caching)
+Smart Evaluation System: Stores pre-defined evaluation templates for specific subjects (e.g., Game Maker, Robot 1, Python). It is structured to integrate AI models that can generate draft comments based on attendance and performance parameters, allowing instructors to review and submit with a single tap.
 
-Mobile Client: Flutter
+Technology Stack
+Backend Environment: Node.js with TypeScript (Framework: Express or Fastify). TypeScript is strictly used to define interfaces for complex GraphQL responses.
 
-Authentication: Firebase Auth (REST API signInWithPassword flow)
+Database: MongoDB (MongoDB Atlas). Used for storing the Users collection, encrypted tokens, evaluation templates, and cached timesheet data.
 
-System Architecture
-Auth Module: Automatically authenticates with Firebase to retrieve the idToken. Manages session state and automatically requests a new token using the refreshToken when the current one expires.
+Mobile Client: Flutter (Targeting iOS and Android).
 
-Proxy Module: Receives lightweight requests from the Flutter app, attaches the valid Bearer Token, and forwards the request to the upstream LMS GraphQL server.
+Authentication: Firebase Authentication (via REST API signInWithPassword flow).
 
-Data Transformer: The core component. It receives the massive JSON response from the LMS, parses the nested objects, extracts only the essential fields (e.g., class ID, student name, attendance status), and returns the clean data to the mobile app.
+Deployment & Hosting: Vercel (Optimized for serverless Node.js functions).
+
+System Architecture & Data Flow
+Authentication Flow: The Flutter app sends credentials to the Node.js Backend. The Backend authenticates with Firebase, retrieves the tokens, stores the refreshToken in MongoDB, and returns a session identifier to the app.
+
+Proxy Flow: The mobile app requests data (e.g., class list). The Backend retrieves the active idToken from the database, forwards the request to the LMS GraphQL endpoint, receives the raw data, applies the Data Transformer logic, and returns the sanitized data to the app.
+
+Action Flow: When an instructor submits an attendance record, the Backend compiles the required GraphQL mutation and executes it on the upstream LMS on behalf of the user.
 
 Target APIs (Reverse Engineered)
 Authentication: https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword?key=[FIREBASE_API_KEY]
 
 LMS GraphQL Endpoint: https://lms-api.mindx.edu.vn/graphql
 
-query GetClasses: Fetches the assigned classes and student lists.
+query GetClasses: Fetches assigned classes and student lists.
 
-mutation StudentAttendance (Expected): Submits attendance records and teacher comments.
+mutation StudentAttendance: Submits attendance records and teacher comments.
 
 Development Roadmap
-[ ] Phase 1: Initialize the Node.js project and configure the MongoDB connection.
+Phase 1: Prototype (MVP) - The Data Filter: Set up the Node.js backend. Hardcode a single active token to establish the connection. Build the core parser to transform the 4MB LMS payload into a lightweight structure.
 
-[ ] Phase 2: Implement the Firebase automated login and token refresh logic.
+Phase 2: Multi-Tenant Auth: Integrate MongoDB. Create the Users schema. Implement the automated login and token refresh logic for multiple accounts.
 
-[ ] Phase 3: Build the Data Transformer utility to parse and map the GetClasses GraphQL response.
+Phase 3: Flutter Mobile App: Develop the UI components (Dashboard, Class List, Attendance Form) and connect them to the optimized Node.js endpoints.
 
-[ ] Phase 4: Develop the Flutter mobile UI (Dashboard, Class List, Attendance form) to consume the optimized API.
+Phase 4: Payroll Automation: Implement cronjobs to fetch completed slots, aggregate working hours, and calculate payroll based on hourly rates.
 
-[ ] Phase 5: Deploy the Node.js backend to a cloud provider (e.g., Vercel).
+Phase 5: Evaluation Engine: Integrate subject-specific comment templates and AI generation endpoints for quick grading.
