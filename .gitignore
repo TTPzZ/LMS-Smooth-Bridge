@@ -1,2 +1,7 @@
 node_modules/
 .env
+.dart_tool/
+build/
+**/.dart_tool/
+**/build/
+code.md
