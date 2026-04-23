@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { env } from '../config/env';
-import { LmsClassRecord } from '../types/lms';
+import { LmsClassRecord, LmsTeacherProfile, LmsTimesheetItem } from '../types/lms';
 import { AuthTokenService } from './authTokenService';
 
 class LmsGraphqlError extends Error {
@@ -138,6 +138,8 @@ export type FetchUniqueClassesResult = {
     totalUniqueClasses: number;
 };
 
+type ClassQueryFilters = Record<string, unknown>;
+
 export class LmsService {
     constructor(private readonly authTokenService: AuthTokenService) {}
 
@@ -189,6 +191,216 @@ export class LmsService {
 
         const refreshedToken = await this.authTokenService.getValidIdToken(true);
         return this.callLmsGraphql<T>(queryPayload, refreshedToken);
+    }
+
+    async getTeacherByUserId(userId: string, idTokenOverride?: string): Promise<LmsTeacherProfile | null> {
+        const normalizedUserId = String(userId ?? '').trim();
+        if (!normalizedUserId) {
+            return null;
+        }
+
+        const graphqlQuery = {
+            operationName: 'TeacherByUserId',
+            query: `query TeacherByUserId($payload: TeacherByUserIdQuery) {
+              teacherByUserId(payload: $payload) {
+                id
+                user
+                username
+                fullName
+                hourlyRate
+                firebaseId
+              }
+            }`,
+            variables: {
+                payload: {
+                    user: normalizedUserId
+                }
+            }
+        };
+
+        const responseData = await this.callLmsGraphqlWithAutoRefresh<{
+            data?: {
+                teacherByUserId?: LmsTeacherProfile | null;
+            };
+        }>(graphqlQuery, idTokenOverride);
+
+        const teacher = responseData?.data?.teacherByUserId;
+        if (!teacher?.id) {
+            return null;
+        }
+
+        return teacher;
+    }
+
+    async findTeacherByUsername(username: string, idTokenOverride?: string): Promise<LmsTeacherProfile | null> {
+        const normalizedUsername = String(username ?? '').trim();
+        if (!normalizedUsername) {
+            return null;
+        }
+
+        const graphqlQuery = {
+            operationName: 'FindTeachersByUsername',
+            query: `query FindTeachersByUsername($payload: TeacherQuery) {
+              teachers(payload: $payload) {
+                data {
+                  id
+                  user
+                  username
+                  fullName
+                  hourlyRate
+                  firebaseId
+                }
+              }
+            }`,
+            variables: {
+                payload: {
+                    filter_textSearch: normalizedUsername,
+                    pageIndex: 0,
+                    itemsPerPage: 20
+                }
+            }
+        };
+
+        const responseData = await this.callLmsGraphqlWithAutoRefresh<{
+            data?: {
+                teachers?: {
+                    data?: LmsTeacherProfile[];
+                };
+            };
+        }>(graphqlQuery, idTokenOverride);
+
+        const teachers = responseData?.data?.teachers?.data;
+        if (!Array.isArray(teachers) || teachers.length === 0) {
+            return null;
+        }
+
+        const exact = teachers.find((teacher) =>
+            typeof teacher?.username === 'string'
+            && teacher.username.toLowerCase() === normalizedUsername.toLowerCase()
+        );
+
+        return exact || null;
+    }
+
+    async findTimesheetByTeacher(
+        teacherId: string,
+        startDate: string,
+        endDate: string,
+        idTokenOverride?: string
+    ): Promise<LmsTimesheetItem[]> {
+        const normalizedTeacherId = String(teacherId ?? '').trim();
+        if (!normalizedTeacherId) {
+            return [];
+        }
+
+        const graphqlQuery = {
+            operationName: 'FindTimesheetByTeacher',
+            query: `query FindTimesheetByTeacher($payload: TimesheetItemQuery) {
+              findTimesheetByTeacher(payload: $payload) {
+                id
+                type
+                date
+                status
+                teacher {
+                  id
+                  username
+                  fullName
+                }
+                classSessionAttendance {
+                  id
+                  startTime
+                  endTime
+                  sessionHour
+                  status
+                  class {
+                    id
+                    name
+                  }
+                }
+              }
+            }`,
+            variables: {
+                payload: {
+                    teacherId: normalizedTeacherId,
+                    startDate,
+                    endDate
+                }
+            }
+        };
+
+        const responseData = await this.callLmsGraphqlWithAutoRefresh<{
+            data?: {
+                findTimesheetByTeacher?: LmsTimesheetItem[];
+            };
+        }>(graphqlQuery, idTokenOverride);
+
+        const items = responseData?.data?.findTimesheetByTeacher;
+        if (!Array.isArray(items)) {
+            return [];
+        }
+
+        return items;
+    }
+
+    async findOfficeHourTimesheetByTeacher(
+        teacherId: string,
+        startDate: string,
+        endDate: string,
+        idTokenOverride?: string
+    ): Promise<LmsTimesheetItem[]> {
+        const normalizedTeacherId = String(teacherId ?? '').trim();
+        if (!normalizedTeacherId) {
+            return [];
+        }
+
+        const graphqlQuery = {
+            operationName: 'FindOfficeHourTimesheetByTeacher',
+            query: `query FindOfficeHourTimesheetByTeacher($payload: TimesheetItemQuery) {
+              findTimesheetByTeacher(payload: $payload) {
+                id
+                type
+                date
+                status
+                teacher {
+                  id
+                  username
+                  fullName
+                }
+                officeHour {
+                  id
+                  startTime
+                  endTime
+                  status
+                  type
+                  studentCount
+                  note
+                  managerNote
+                  shortName
+                }
+              }
+            }`,
+            variables: {
+                payload: {
+                    teacherId: normalizedTeacherId,
+                    startDate,
+                    endDate,
+                    type: 'OFFICE_HOUR'
+                }
+            }
+        };
+
+        const responseData = await this.callLmsGraphqlWithAutoRefresh<{
+            data?: {
+                findTimesheetByTeacher?: LmsTimesheetItem[];
+            };
+        }>(graphqlQuery, idTokenOverride);
+
+        const items = responseData?.data?.findTimesheetByTeacher;
+        if (!Array.isArray(items)) {
+            return [];
+        }
+
+        return items;
     }
 
     async getClassesPage(pageIndex: number, itemsPerPage: number, idTokenOverride?: string): Promise<LmsClassRecord[]> {
@@ -244,12 +456,13 @@ export class LmsService {
     async getClassesPageForPayroll(
         pageIndex: number,
         itemsPerPage: number,
-        idTokenOverride?: string
+        idTokenOverride?: string,
+        filters?: ClassQueryFilters
     ): Promise<LmsClassRecord[]> {
         const graphqlQuery = {
             operationName: 'GetClassesForPayroll',
-            query: `query GetClassesForPayroll($pageIndex: Int!, $itemsPerPage: Int!) {
-              classes(payload: {pageIndex: $pageIndex, itemsPerPage: $itemsPerPage}) {
+            query: `query GetClassesForPayroll($payload: ClassQuery) {
+              classes(payload: $payload) {
                 data {
                   id
                   name
@@ -304,8 +517,11 @@ export class LmsService {
               }
             }`,
             variables: {
-                pageIndex,
-                itemsPerPage
+                payload: {
+                    pageIndex,
+                    itemsPerPage,
+                    ...(filters || {})
+                }
             }
         };
 
@@ -340,10 +556,11 @@ export class LmsService {
     async fetchUniqueClassesForPayroll(
         itemsPerPage: number = env.DEFAULT_ITEMS_PER_PAGE,
         maxPages: number = env.DEFAULT_MAX_PAGES,
-        idTokenOverride?: string
+        idTokenOverride?: string,
+        filters?: ClassQueryFilters
     ): Promise<FetchUniqueClassesResult> {
         return this.fetchUniqueClassesByPageFetcher(
-            (pageIndex, perPage) => this.getClassesPageForPayroll(pageIndex, perPage, idTokenOverride),
+            (pageIndex, perPage) => this.getClassesPageForPayroll(pageIndex, perPage, idTokenOverride, filters),
             itemsPerPage,
             maxPages
         );
