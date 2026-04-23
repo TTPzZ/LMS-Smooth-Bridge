@@ -10,6 +10,7 @@ import {
 } from '../services/attendanceWindowService';
 import { parseBearerToken, parseBooleanQuery, parseIntegerQuery, sanitizePositiveInt } from '../utils/requestParsers';
 import { LmsClassRecord } from '../types/lms';
+import { decodeJwtPayload } from '../utils/jwt';
 
 function collectStudents(cls: LmsClassRecord): string[] {
     const studentMap = new Map<string, string>();
@@ -46,6 +47,19 @@ export function createClassRouter(lmsService: LmsService): Router {
             const activeOnly = parseBooleanQuery(req.query.activeOnly, true);
             const now = new Date();
             const nowMs = now.getTime();
+            const tokenPayload = idTokenFromHeader ? decodeJwtPayload(idTokenFromHeader) : null;
+            const principal = {
+                teacherId: typeof tokenPayload?.user_id === 'string'
+                    ? tokenPayload.user_id.trim()
+                    : typeof tokenPayload?.sub === 'string'
+                        ? tokenPayload.sub.trim()
+                        : null,
+                username: typeof tokenPayload?.username === 'string'
+                    ? tokenPayload.username.trim()
+                    : typeof tokenPayload?.email === 'string'
+                        ? tokenPayload.email.trim()
+                        : null
+            };
 
             const {
                 classes,
@@ -58,7 +72,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                 .filter((cls) => (activeOnly ? isRunningClass(cls, now) : true))
                 .map((cls) => {
                     const students = collectStudents(cls);
-                    const upcomingWindows = getClassAttendanceWindows(cls, nowMs)
+                    const upcomingWindows = getClassAttendanceWindows(cls, nowMs, principal)
                         .filter((window) => window.attendanceCloseAtMs >= nowMs);
                     const nextAttendanceWindow = upcomingWindows.length > 0
                         ? toPublicAttendanceWindow(upcomingWindows[0])
@@ -125,6 +139,19 @@ export function createClassRouter(lmsService: LmsService): Router {
             const now = new Date();
             const nowMs = now.getTime();
             const lookAheadUntilMs = nowMs + lookAheadMinutes * 60_000;
+            const tokenPayload = idTokenFromHeader ? decodeJwtPayload(idTokenFromHeader) : null;
+            const principal = {
+                teacherId: typeof tokenPayload?.user_id === 'string'
+                    ? tokenPayload.user_id.trim()
+                    : typeof tokenPayload?.sub === 'string'
+                        ? tokenPayload.sub.trim()
+                        : null,
+                username: typeof tokenPayload?.username === 'string'
+                    ? tokenPayload.username.trim()
+                    : typeof tokenPayload?.email === 'string'
+                        ? tokenPayload.email.trim()
+                        : null
+            };
 
             const {
                 classes,
@@ -134,7 +161,7 @@ export function createClassRouter(lmsService: LmsService): Router {
             } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader ?? undefined);
 
             const filteredClasses = classes.filter((cls) => (activeOnly ? isRunningClass(cls, now) : true));
-            const windows = filteredClasses.flatMap((cls) => getClassAttendanceWindows(cls, nowMs))
+            const windows = filteredClasses.flatMap((cls) => getClassAttendanceWindows(cls, nowMs, principal))
                 .filter((window) => window.attendanceCloseAtMs >= nowMs)
                 .filter((window) => window.attendanceOpenAtMs <= lookAheadUntilMs)
                 .sort((a, b) => {
