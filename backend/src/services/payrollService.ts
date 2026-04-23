@@ -127,7 +127,11 @@ function normalizeCountedStatuses(value: unknown): string[] {
 export class PayrollService {
     constructor(private readonly lmsService: LmsService) {}
 
-    private async resolvePrincipal(teacherIdQuery: unknown, usernameQuery: unknown): Promise<TeacherPrincipal> {
+    private async resolvePrincipal(
+        teacherIdQuery: unknown,
+        usernameQuery: unknown,
+        idTokenOverride?: string
+    ): Promise<TeacherPrincipal> {
         const teacherId = String(teacherIdQuery ?? '').trim() || null;
         const username = String(usernameQuery ?? '').trim() || null;
 
@@ -139,7 +143,7 @@ export class PayrollService {
             };
         }
 
-        const token = await this.lmsService.getCurrentAuthToken();
+        const token = await this.lmsService.getCurrentAuthToken(idTokenOverride);
         const payload = decodeJwtPayload(token);
         const tokenUsername = typeof payload?.username === 'string'
             ? payload.username.trim()
@@ -216,7 +220,7 @@ export class PayrollService {
         return slots;
     }
 
-    async getMonthlyPayroll(params: PayrollParams) {
+    async getMonthlyPayroll(params: PayrollParams, idTokenOverride?: string) {
         const timezoneInput = String(params.timezone ?? 'Asia/Ho_Chi_Minh').trim() || 'Asia/Ho_Chi_Minh';
         const timezone = isValidTimeZone(timezoneInput) ? timezoneInput : 'Asia/Ho_Chi_Minh';
 
@@ -232,7 +236,7 @@ export class PayrollService {
             throw new Error('month khong hop le (1-12)');
         }
 
-        const principal = await this.resolvePrincipal(params.teacherId, params.username);
+        const principal = await this.resolvePrincipal(params.teacherId, params.username, idTokenOverride);
         if (!principal.teacherId && !principal.username) {
             throw new Error('Khong xac dinh duoc teacher. Hay truyen teacherId hoac username');
         }
@@ -242,7 +246,11 @@ export class PayrollService {
             fetchedPages,
             totalRawClasses,
             totalUniqueClasses
-        } = await this.lmsService.fetchUniqueClassesForPayroll(itemsPerPage, maxPages);
+        } = await this.lmsService.fetchUniqueClassesForPayroll(
+            itemsPerPage,
+            maxPages,
+            idTokenOverride
+        );
 
         const allSlotItems: PayrollSlotItem[] = [];
         classes.forEach((cls) => {

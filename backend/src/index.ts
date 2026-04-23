@@ -1,42 +1,9 @@
-import express from 'express';
-import cors from 'cors';
 import { env } from './config/env';
-import { connectMongo, disconnectMongo } from './db/mongo';
-import { AuthTokenService } from './services/authTokenService';
-import { LmsService } from './services/lmsService';
-import { DeviceService } from './services/deviceService';
-import { NotifierService } from './services/notifierService';
-import { PayrollService } from './services/payrollService';
-import { createClassRouter } from './routes/classRoutes';
-import { createDeviceRouter } from './routes/deviceRoutes';
-import { createNotifierRouter } from './routes/notifierRoutes';
-import { createPayrollRouter } from './routes/payrollRoutes';
+import { disconnectMongo } from './db/mongo';
+import { createApp } from './app';
 
 async function bootstrap(): Promise<void> {
-    const app = express();
-
-    app.use(cors());
-    app.use(express.json());
-
-    await connectMongo();
-
-    const authTokenService = new AuthTokenService();
-    const lmsService = new LmsService(authTokenService);
-    const deviceService = new DeviceService();
-    const notifierService = new NotifierService(lmsService);
-    const payrollService = new PayrollService(lmsService);
-
-    app.use('/api', createClassRouter(lmsService));
-    app.use('/api', createDeviceRouter(deviceService));
-    app.use('/api', createNotifierRouter(notifierService));
-    app.use('/api', createPayrollRouter(payrollService));
-
-    app.get('/health', (_req, res) => {
-        res.json({
-            success: true,
-            status: 'ok'
-        });
-    });
+    const { app, authTokenService, notifierService } = await createApp();
 
     const server = app.listen(env.PORT, () => {
         console.log(`Server dang chay tai http://localhost:${env.PORT}`);

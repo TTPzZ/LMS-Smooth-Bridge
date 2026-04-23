@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/api_models.dart';
 
+typedef IdTokenProvider = Future<String?> Function({bool forceRefresh});
+
 class ApiException implements Exception {
   final String message;
   ApiException(this.message);
@@ -13,11 +15,14 @@ class ApiException implements Exception {
 class BackendApiService {
   final String baseUrl;
   final http.Client _client;
+  final IdTokenProvider? _idTokenProvider;
 
   BackendApiService({
     required this.baseUrl,
     http.Client? client,
-  }) : _client = client ?? http.Client();
+    IdTokenProvider? idTokenProvider,
+  })  : _client = client ?? http.Client(),
+        _idTokenProvider = idTokenProvider;
 
   Uri _buildUri(String path, [Map<String, String>? query]) {
     final normalizedBase = baseUrl.endsWith('/')
@@ -32,11 +37,36 @@ class BackendApiService {
     String path, {
     Map<String, String>? query,
   }) async {
-    final response = await _client.get(_buildUri(path, query));
+    final uri = _buildUri(path, query);
+    var response = await _getWithOptionalAuth(uri);
+
+    if (response.statusCode == 401 && _idTokenProvider != null) {
+      response = await _getWithOptionalAuth(uri, forceRefresh: true);
+    }
+
+    return _decodeAndValidate(response);
+  }
+
+  Future<http.Response> _getWithOptionalAuth(
+    Uri uri, {
+    bool forceRefresh = false,
+  }) async {
+    final headers = <String, String>{};
+    final provider = _idTokenProvider;
+    if (provider != null) {
+      final token = await provider(forceRefresh: forceRefresh);
+      final normalizedToken = token?.trim() ?? '';
+      if (normalizedToken.isNotEmpty) {
+        headers['Authorization'] = 'Bearer $normalizedToken';
+      }
+    }
+
+    return _client.get(uri, headers: headers);
+  }
+
+  Map<String, dynamic> _decodeAndValidate(http.Response response) {
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ApiException(
-        'HTTP ${response.statusCode}: ${response.body}',
-      );
+      throw ApiException('HTTP ${response.statusCode}: ${response.body}');
     }
 
     final decoded = jsonDecode(response.body);

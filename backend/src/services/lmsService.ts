@@ -13,6 +13,16 @@ class LmsGraphqlError extends Error {
     }
 }
 
+export class LmsClientAuthError extends Error {
+    statusCode: number;
+
+    constructor(message: string = 'Unauthorized: invalid or expired Bearer token') {
+        super(message);
+        this.name = 'LmsClientAuthError';
+        this.statusCode = 401;
+    }
+}
+
 function isAuthRelatedMessage(message: string | undefined): boolean {
     if (!message) {
         return false;
@@ -91,7 +101,22 @@ export class LmsService {
         return response.data as T;
     }
 
-    private async callLmsGraphqlWithAutoRefresh<T>(queryPayload: unknown): Promise<T> {
+    private async callLmsGraphqlWithAutoRefresh<T>(queryPayload: unknown, idTokenOverride?: string): Promise<T> {
+        const normalizedOverrideToken = String(idTokenOverride ?? '').trim();
+        if (normalizedOverrideToken) {
+            try {
+                return await this.callLmsGraphql<T>(queryPayload, normalizedOverrideToken);
+            } catch (error) {
+                const isAuthError =
+                    (error instanceof LmsGraphqlError && error.isAuthError) || isHttpAuthError(error);
+                if (isAuthError) {
+                    throw new LmsClientAuthError();
+                }
+
+                throw error;
+            }
+        }
+
         const firstToken = await this.authTokenService.getValidIdToken(false);
 
         try {
@@ -109,7 +134,7 @@ export class LmsService {
         return this.callLmsGraphql<T>(queryPayload, refreshedToken);
     }
 
-    async getClassesPage(pageIndex: number, itemsPerPage: number): Promise<LmsClassRecord[]> {
+    async getClassesPage(pageIndex: number, itemsPerPage: number, idTokenOverride?: string): Promise<LmsClassRecord[]> {
         const graphqlQuery = {
             operationName: 'GetClasses',
             query: `query GetClasses($pageIndex: Int!, $itemsPerPage: Int!) {
@@ -149,7 +174,7 @@ export class LmsService {
                     data?: LmsClassRecord[];
                 };
             };
-        }>(graphqlQuery);
+        }>(graphqlQuery, idTokenOverride);
 
         const classes = responseData?.data?.classes?.data;
         if (!Array.isArray(classes)) {
@@ -159,7 +184,11 @@ export class LmsService {
         return classes as LmsClassRecord[];
     }
 
-    async getClassesPageForPayroll(pageIndex: number, itemsPerPage: number): Promise<LmsClassRecord[]> {
+    async getClassesPageForPayroll(
+        pageIndex: number,
+        itemsPerPage: number,
+        idTokenOverride?: string
+    ): Promise<LmsClassRecord[]> {
         const graphqlQuery = {
             operationName: 'GetClassesForPayroll',
             query: `query GetClassesForPayroll($pageIndex: Int!, $itemsPerPage: Int!) {
@@ -229,7 +258,7 @@ export class LmsService {
                     data?: LmsClassRecord[];
                 };
             };
-        }>(graphqlQuery);
+        }>(graphqlQuery, idTokenOverride);
 
         const classes = responseData?.data?.classes?.data;
         if (!Array.isArray(classes)) {
@@ -241,10 +270,11 @@ export class LmsService {
 
     async fetchUniqueClasses(
         itemsPerPage: number = env.DEFAULT_ITEMS_PER_PAGE,
-        maxPages: number = env.DEFAULT_MAX_PAGES
+        maxPages: number = env.DEFAULT_MAX_PAGES,
+        idTokenOverride?: string
     ): Promise<FetchUniqueClassesResult> {
         return this.fetchUniqueClassesByPageFetcher(
-            (pageIndex, perPage) => this.getClassesPage(pageIndex, perPage),
+            (pageIndex, perPage) => this.getClassesPage(pageIndex, perPage, idTokenOverride),
             itemsPerPage,
             maxPages
         );
@@ -252,10 +282,11 @@ export class LmsService {
 
     async fetchUniqueClassesForPayroll(
         itemsPerPage: number = env.DEFAULT_ITEMS_PER_PAGE,
-        maxPages: number = env.DEFAULT_MAX_PAGES
+        maxPages: number = env.DEFAULT_MAX_PAGES,
+        idTokenOverride?: string
     ): Promise<FetchUniqueClassesResult> {
         return this.fetchUniqueClassesByPageFetcher(
-            (pageIndex, perPage) => this.getClassesPageForPayroll(pageIndex, perPage),
+            (pageIndex, perPage) => this.getClassesPageForPayroll(pageIndex, perPage, idTokenOverride),
             itemsPerPage,
             maxPages
         );
@@ -299,7 +330,12 @@ export class LmsService {
         };
     }
 
-    async getCurrentAuthToken(): Promise<string> {
+    async getCurrentAuthToken(idTokenOverride?: string): Promise<string> {
+        const normalizedOverrideToken = String(idTokenOverride ?? '').trim();
+        if (normalizedOverrideToken) {
+            return normalizedOverrideToken;
+        }
+
         return this.authTokenService.getValidIdToken(false);
     }
 }
