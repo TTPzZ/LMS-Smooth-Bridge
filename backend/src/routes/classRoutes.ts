@@ -8,7 +8,7 @@ import {
     parseDateToMs,
     toPublicAttendanceWindow
 } from '../services/attendanceWindowService';
-import { parseBooleanQuery, parseIntegerQuery, sanitizePositiveInt } from '../utils/requestParsers';
+import { parseBearerToken, parseBooleanQuery, parseIntegerQuery, sanitizePositiveInt } from '../utils/requestParsers';
 import { LmsClassRecord } from '../types/lms';
 
 function collectStudents(cls: LmsClassRecord): string[] {
@@ -31,6 +31,16 @@ export function createClassRouter(lmsService: LmsService): Router {
 
     router.get('/classes', async (req: Request, res: Response) => {
         try {
+            const idTokenFromHeader = parseBearerToken(req.headers.authorization);
+            if (req.headers.authorization && !idTokenFromHeader) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Authorization header khong hop le',
+                    detail: 'Expected format: Bearer <id_token>'
+                });
+                return;
+            }
+
             const itemsPerPage = parseIntegerQuery(req.query.itemsPerPage, env.DEFAULT_ITEMS_PER_PAGE);
             const maxPages = parseIntegerQuery(req.query.maxPages, env.DEFAULT_MAX_PAGES);
             const activeOnly = parseBooleanQuery(req.query.activeOnly, true);
@@ -42,7 +52,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                 fetchedPages,
                 totalRawClasses,
                 totalUniqueClasses
-            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages);
+            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader ?? undefined);
 
             const cleanClasses = classes
                 .filter((cls) => (activeOnly ? isRunningClass(cls, now) : true))
@@ -84,7 +94,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                 }
             });
         } catch (error: any) {
-            const statusCode = error?.response?.status || 500;
+            const statusCode = error?.statusCode || error?.response?.status || 500;
             const detail = error?.response?.data || error?.message;
             console.error('Loi:', detail);
             res.status(statusCode).json({
@@ -97,6 +107,16 @@ export function createClassRouter(lmsService: LmsService): Router {
 
     router.get('/attendance-reminders', async (req: Request, res: Response) => {
         try {
+            const idTokenFromHeader = parseBearerToken(req.headers.authorization);
+            if (req.headers.authorization && !idTokenFromHeader) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Authorization header khong hop le',
+                    detail: 'Expected format: Bearer <id_token>'
+                });
+                return;
+            }
+
             const itemsPerPage = parseIntegerQuery(req.query.itemsPerPage, env.DEFAULT_ITEMS_PER_PAGE);
             const maxPages = parseIntegerQuery(req.query.maxPages, env.DEFAULT_MAX_PAGES);
             const activeOnly = parseBooleanQuery(req.query.activeOnly, true);
@@ -111,7 +131,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                 fetchedPages,
                 totalRawClasses,
                 totalUniqueClasses
-            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages);
+            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader ?? undefined);
 
             const filteredClasses = classes.filter((cls) => (activeOnly ? isRunningClass(cls, now) : true));
             const windows = filteredClasses.flatMap((cls) => getClassAttendanceWindows(cls, nowMs))
@@ -146,7 +166,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                 }
             });
         } catch (error: any) {
-            const statusCode = error?.response?.status || 500;
+            const statusCode = error?.statusCode || error?.response?.status || 500;
             const detail = error?.response?.data || error?.message;
             console.error('Loi:', detail);
             res.status(statusCode).json({

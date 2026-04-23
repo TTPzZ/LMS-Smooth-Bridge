@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+
 import '../models/api_models.dart';
+import '../models/auth_models.dart';
+import '../services/auth_session_manager.dart';
 import '../services/backend_api_service.dart';
 
 const String _defaultApiBase = String.fromEnvironment(
@@ -9,7 +12,14 @@ const String _defaultApiBase = String.fromEnvironment(
 );
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final AuthSessionManager sessionManager;
+  final Future<void> Function() onSignOut;
+
+  const HomeScreen({
+    super.key,
+    required this.sessionManager,
+    required this.onSignOut,
+  });
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -26,15 +36,32 @@ class _HomeScreenState extends State<HomeScreen> {
   late Future<List<ReminderItem>> _remindersFuture;
   late Future<PayrollResponse> _payrollFuture;
 
+  late AuthSession _session;
+  bool _isHandlingAuthFailure = false;
+
   @override
   void initState() {
     super.initState();
     final now = DateTime.now();
-    _baseUrlController = TextEditingController(text: _defaultApiBase);
+    final currentSession = widget.sessionManager.currentSession;
+    if (currentSession == null) {
+      throw StateError('HomeScreen requires an active session.');
+    }
+
+    _session = currentSession;
+    _baseUrlController = TextEditingController(
+      text: _session.backendBaseUrl.isEmpty
+          ? _defaultApiBase
+          : _session.backendBaseUrl,
+    );
     _usernameController = TextEditingController();
     _monthController = TextEditingController(text: now.month.toString());
     _yearController = TextEditingController(text: now.year.toString());
-    _api = BackendApiService(baseUrl: _baseUrlController.text.trim());
+
+    _api = BackendApiService(
+      baseUrl: _baseUrlController.text.trim(),
+      idTokenProvider: _provideIdToken,
+    );
     _reloadAll();
   }
 
@@ -47,10 +74,64 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
-  void _rebuildApi() {
+  Future<String?> _provideIdToken({bool forceRefresh = false}) async {
+    try {
+      final previousSession = _session;
+      final token = await widget.sessionManager.getValidIdToken(
+        forceRefresh: forceRefresh,
+      );
+      final latestSession = widget.sessionManager.currentSession;
+      if (latestSession != null &&
+          latestSession != previousSession &&
+          mounted) {
+        setState(() {
+          _session = latestSession;
+        });
+      }
+      return token;
+    } catch (_) {
+      await _handleAuthFailure();
+      rethrow;
+    }
+  }
+
+  Future<void> _handleAuthFailure() async {
+    if (_isHandlingAuthFailure) {
+      return;
+    }
+    _isHandlingAuthFailure = true;
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Session expired. Please sign in again.'),
+        ),
+      );
+    }
+
+    await widget.onSignOut();
+  }
+
+  Future<void> _applyConfigAndReload() async {
     final raw = _baseUrlController.text.trim();
-    if (raw.isEmpty) return;
-    _api = BackendApiService(baseUrl: raw);
+    if (raw.isEmpty) {
+      return;
+    }
+
+    final updatedSession =
+        await widget.sessionManager.updateBackendBaseUrl(raw);
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _session = updatedSession;
+      _api = BackendApiService(
+        baseUrl: raw,
+        idTokenProvider: _provideIdToken,
+      );
+    });
+    _reloadAll();
   }
 
   void _reloadAll() {
@@ -67,11 +148,133 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  Future<void> _forceRefreshToken() async {
+    try {
+      final refreshed = await widget.sessionManager.ensureSession(
+        forceRefresh: true,
+      );
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _session = refreshed;
+      });
+      _reloadAll();
+
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Token refreshed successfully.')),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Refresh failed: $error')),
+      );
+    }
+  }
+
   String _formatDateTime(String? iso) {
-    if (iso == null || iso.isEmpty) return '-';
+    if (iso == null || iso.isEmpty) {
+      return '-';
+    }
     final parsed = DateTime.tryParse(iso);
-    if (parsed == null) return iso;
+    if (parsed == null) {
+      return iso;
+    }
     return DateFormat('yyyy-MM-dd HH:mm').format(parsed.toLocal());
+  }
+
+  String _formatExpiry(AuthSession session) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final remainMs = session.expiresAtMs - now;
+    final remainMinutes = (remainMs / 60000).floor();
+
+    if (remainMinutes < 0) {
+      return '${DateFormat('yyyy-MM-dd HH:mm:ss').format(session.expiresAt.toLocal())} (expired)';
+    }
+    return '${DateFormat('yyyy-MM-dd HH:mm:ss').format(session.expiresAt.toLocal())} (T-${remainMinutes}m)';
+  }
+
+  Widget _buildTokenBlock({
+    required String label,
+    required String value,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.black26),
+            borderRadius: BorderRadius.circular(8),
+            color: Colors.black.withValues(alpha: 0.02),
+          ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SelectableText(
+              value,
+              style: const TextStyle(
+                fontSize: 12,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAuthPanel() {
+    return Card(
+      margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Auth Session',
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            Text('Email: ${_session.email}'),
+            Text('Token expires: ${_formatExpiry(_session)}'),
+            const SizedBox(height: 8),
+            _buildTokenBlock(label: 'id_token', value: _session.idToken),
+            const SizedBox(height: 8),
+            _buildTokenBlock(
+              label: 'refresh_token',
+              value: _session.refreshToken,
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: _forceRefreshToken,
+                  icon: const Icon(Icons.token),
+                  label: const Text('Force Refresh Token'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: widget.onSignOut,
+                  icon: const Icon(Icons.logout),
+                  label: const Text('Sign Out'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _buildConfigPanel() {
@@ -138,10 +341,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
                 FilledButton.icon(
-                  onPressed: () {
-                    _rebuildApi();
-                    _reloadAll();
-                  },
+                  onPressed: _applyConfigAndReload,
                   icon: const Icon(Icons.sync),
                   label: const Text('Reload'),
                 ),
@@ -298,18 +498,18 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: ExpansionTile(
                   title: Text(cls.className),
                   subtitle: Text(
-                    '${cls.taughtSlotCount} slots | ${cls.totalHours}h | ${cls.roles.join(", ")}',
+                    '${cls.taughtSlotCount} slots | ${cls.totalHours}h | ${cls.roles.join(', ')}',
                   ),
                   children: cls.slots
                       .map(
                         (slot) => ListTile(
                           dense: true,
                           title: Text(
-                            'Slot ${slot.slotIndex ?? "-"} - ${slot.attendanceStatus}',
+                            'Slot ${slot.slotIndex ?? '-'} - ${slot.attendanceStatus}',
                           ),
                           subtitle: Text(
                             '${_formatDateTime(slot.startTime)} -> ${_formatDateTime(slot.endTime)}\n'
-                            'Role: ${slot.roleShortName ?? slot.roleName ?? "UNKNOWN"} | ${slot.durationHours}h',
+                            'Role: ${slot.roleShortName ?? slot.roleName ?? 'UNKNOWN'} | ${slot.durationHours}h',
                           ),
                           isThreeLine: true,
                         ),
@@ -331,6 +531,13 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Scaffold(
         appBar: AppBar(
           title: const Text('LMS Smooth Bridge'),
+          actions: [
+            IconButton(
+              onPressed: widget.onSignOut,
+              icon: const Icon(Icons.logout),
+              tooltip: 'Sign out',
+            ),
+          ],
           bottom: const TabBar(
             tabs: [
               Tab(text: 'Classes'),
@@ -342,6 +549,7 @@ class _HomeScreenState extends State<HomeScreen> {
         body: Column(
           children: [
             _buildConfigPanel(),
+            _buildAuthPanel(),
             const Divider(height: 1),
             Expanded(
               child: TabBarView(
