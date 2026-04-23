@@ -38,6 +38,18 @@ async function buildAppContext(): Promise<AppContext> {
     app.use('/api', createNotifierRouter(notifierService));
     app.use('/api', createPayrollRouter(payrollService));
 
+    app.get('/', (_req, res) => {
+        res.status(200).json({
+            success: true,
+            service: 'lms-smooth-bridge-backend',
+            health: '/health'
+        });
+    });
+
+    app.get(['/favicon.ico', '/favicon.png'], (_req, res) => {
+        res.status(204).end();
+    });
+
     app.get('/health', (_req, res) => {
         res.json({
             success: true,
