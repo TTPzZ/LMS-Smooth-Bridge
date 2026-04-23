@@ -21,6 +21,15 @@ export type LmsTeacherUser = {
     fullName?: string;
 };
 
+export type LmsTeacherProfile = {
+    id: string;
+    user?: string;
+    username?: string;
+    fullName?: string;
+    hourlyRate?: string;
+    firebaseId?: string;
+};
+
 export type LmsTeacherRole = {
     id?: string;
     name?: string;
@@ -65,4 +74,40 @@ export type LmsClassRecord = {
     endDate?: string;
     teachers?: LmsTeacherAssignment[];
     slots?: LmsSlotRecord[];
+};
+
+export type LmsTimesheetClass = {
+    id?: string;
+    name?: string;
+};
+
+export type LmsClassSessionAttendance = {
+    id?: string;
+    startTime?: string;
+    endTime?: string;
+    sessionHour?: number;
+    status?: string;
+    class?: LmsTimesheetClass;
+};
+
+export type LmsOfficeHour = {
+    id?: string;
+    startTime?: string;
+    endTime?: string;
+    status?: string;
+    type?: string;
+    studentCount?: number;
+    note?: string | null;
+    managerNote?: string | null;
+    shortName?: string;
+};
+
+export type LmsTimesheetItem = {
+    id?: string;
+    type?: string;
+    date?: string;
+    status?: string;
+    teacher?: LmsTeacherProfile;
+    classSessionAttendance?: LmsClassSessionAttendance;
+    officeHour?: LmsOfficeHour;
 };

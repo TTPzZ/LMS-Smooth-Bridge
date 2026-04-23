@@ -40,6 +40,22 @@ class AttendanceWindow {
       totalStudentsInSlot: _asInt(json['totalStudentsInSlot']),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'slotId': slotId,
+      'slotIndex': slotIndex,
+      'slotDate': slotDate,
+      'slotStartTime': slotStartTime,
+      'slotEndTime': slotEndTime,
+      'attendanceOpenAt': attendanceOpenAt,
+      'attendanceCloseAt': attendanceCloseAt,
+      'isWindowOpen': isWindowOpen,
+      'minutesUntilWindowOpen': minutesUntilWindowOpen,
+      'minutesUntilWindowClose': minutesUntilWindowClose,
+      'totalStudentsInSlot': totalStudentsInSlot,
+    };
+  }
 }
 
 class ClassSummary {
@@ -49,6 +65,7 @@ class ClassSummary {
   final String? classEndDate;
   final bool isClassEnded;
   final int totalStudents;
+  final List<String> students;
   final int totalSlots;
   final AttendanceWindow? nextAttendanceWindow;
 
@@ -59,6 +76,7 @@ class ClassSummary {
     required this.classEndDate,
     required this.isClassEnded,
     required this.totalStudents,
+    required this.students,
     required this.totalSlots,
     required this.nextAttendanceWindow,
   });
@@ -72,11 +90,26 @@ class ClassSummary {
       classEndDate: json['classEndDate']?.toString(),
       isClassEnded: json['isClassEnded'] == true,
       totalStudents: _asInt(json['totalStudents']),
+      students: _asStringList(json['students']),
       totalSlots: _asInt(json['totalSlots']),
       nextAttendanceWindow: (next is Map<String, dynamic>)
           ? AttendanceWindow.fromJson(next)
           : null,
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'classId': classId,
+      'className': className,
+      'status': status,
+      'classEndDate': classEndDate,
+      'isClassEnded': isClassEnded,
+      'totalStudents': totalStudents,
+      'students': students,
+      'totalSlots': totalSlots,
+      'nextAttendanceWindow': nextAttendanceWindow?.toJson(),
+    };
   }
 }
 
@@ -131,6 +164,25 @@ class ReminderItem {
       totalStudentsInSlot: _asInt(json['totalStudentsInSlot']),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'classId': classId,
+      'className': className,
+      'classStatus': classStatus,
+      'classEndDate': classEndDate,
+      'slotId': slotId,
+      'slotIndex': slotIndex,
+      'slotStartTime': slotStartTime,
+      'slotEndTime': slotEndTime,
+      'attendanceOpenAt': attendanceOpenAt,
+      'attendanceCloseAt': attendanceCloseAt,
+      'isWindowOpen': isWindowOpen,
+      'minutesUntilWindowOpen': minutesUntilWindowOpen,
+      'minutesUntilWindowClose': minutesUntilWindowClose,
+      'totalStudentsInSlot': totalStudentsInSlot,
+    };
+  }
 }
 
 class PayrollRoleSummary {
@@ -153,6 +205,15 @@ class PayrollRoleSummary {
       classCount: _asInt(json['classCount']),
       totalHours: _asDouble(json['totalHours']),
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'role': role,
+      'slotCount': slotCount,
+      'classCount': classCount,
+      'totalHours': totalHours,
+    };
   }
 }
 
@@ -195,6 +256,21 @@ class PayrollSlot {
       durationHours: _asDouble(json['durationHours']),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'classId': classId,
+      'className': className,
+      'slotId': slotId,
+      'slotIndex': slotIndex,
+      'startTime': startTime,
+      'endTime': endTime,
+      'attendanceStatus': attendanceStatus,
+      'roleName': roleName,
+      'roleShortName': roleShortName,
+      'durationHours': durationHours,
+    };
+  }
 }
 
 class PayrollClass {
@@ -224,6 +300,17 @@ class PayrollClass {
       slots: _asMapList(json['slots']).map(PayrollSlot.fromJson).toList(),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'classId': classId,
+      'className': className,
+      'taughtSlotCount': taughtSlotCount,
+      'totalHours': totalHours,
+      'roles': roles,
+      'slots': slots.map((item) => item.toJson()).toList(),
+    };
+  }
 }
 
 class PayrollSummary {
@@ -248,6 +335,104 @@ class PayrollSummary {
           _asMapList(json['byRole']).map(PayrollRoleSummary.fromJson).toList(),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'totalTaughtSlots': totalTaughtSlots,
+      'totalClasses': totalClasses,
+      'totalHours': totalHours,
+      'byRole': byRole.map((item) => item.toJson()).toList(),
+    };
+  }
+}
+
+class PayrollProjection {
+  final int totalAssignedSlots;
+  final double totalAssignedHours;
+  final List<PayrollRoleSummary> byRole;
+
+  PayrollProjection({
+    required this.totalAssignedSlots,
+    required this.totalAssignedHours,
+    required this.byRole,
+  });
+
+  factory PayrollProjection.fromJson(Map<String, dynamic> json) {
+    return PayrollProjection(
+      totalAssignedSlots: _asInt(json['totalAssignedSlots']),
+      totalAssignedHours: _asDouble(json['totalAssignedHours']),
+      byRole:
+          _asMapList(json['byRole']).map(PayrollRoleSummary.fromJson).toList(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'totalAssignedSlots': totalAssignedSlots,
+      'totalAssignedHours': totalAssignedHours,
+      'byRole': byRole.map((item) => item.toJson()).toList(),
+    };
+  }
+}
+
+class PayrollOfficeHour {
+  final String timesheetId;
+  final String? officeHourId;
+  final String startTime;
+  final String? endTime;
+  final String status;
+  final String? officeHourType;
+  final int studentCount;
+  final double durationHours;
+  final String? note;
+  final String? managerNote;
+  final String? shortName;
+
+  PayrollOfficeHour({
+    required this.timesheetId,
+    required this.officeHourId,
+    required this.startTime,
+    required this.endTime,
+    required this.status,
+    required this.officeHourType,
+    required this.studentCount,
+    required this.durationHours,
+    required this.note,
+    required this.managerNote,
+    required this.shortName,
+  });
+
+  factory PayrollOfficeHour.fromJson(Map<String, dynamic> json) {
+    return PayrollOfficeHour(
+      timesheetId: (json['timesheetId'] ?? '').toString(),
+      officeHourId: json['officeHourId']?.toString(),
+      startTime: (json['startTime'] ?? '').toString(),
+      endTime: json['endTime']?.toString(),
+      status: (json['status'] ?? '').toString(),
+      officeHourType: json['officeHourType']?.toString(),
+      studentCount: _asInt(json['studentCount']),
+      durationHours: _asDouble(json['durationHours']),
+      note: json['note']?.toString(),
+      managerNote: json['managerNote']?.toString(),
+      shortName: json['shortName']?.toString(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'timesheetId': timesheetId,
+      'officeHourId': officeHourId,
+      'startTime': startTime,
+      'endTime': endTime,
+      'status': status,
+      'officeHourType': officeHourType,
+      'studentCount': studentCount,
+      'durationHours': durationHours,
+      'note': note,
+      'managerNote': managerNote,
+      'shortName': shortName,
+    };
+  }
 }
 
 class PayrollResponse {
@@ -255,6 +440,8 @@ class PayrollResponse {
   final int year;
   final String timezone;
   final PayrollSummary summary;
+  final PayrollProjection? projection;
+  final List<PayrollOfficeHour> officeHours;
   final List<PayrollClass> classes;
 
   PayrollResponse({
@@ -262,18 +449,42 @@ class PayrollResponse {
     required this.year,
     required this.timezone,
     required this.summary,
+    required this.projection,
+    required this.officeHours,
     required this.classes,
   });
 
   factory PayrollResponse.fromJson(Map<String, dynamic> json) {
+    final projectionRaw = json['projection'];
     return PayrollResponse(
       month: _asInt(json['month']),
       year: _asInt(json['year']),
       timezone: (json['timezone'] ?? '').toString(),
       summary: PayrollSummary.fromJson(
           (json['summary'] as Map<String, dynamic>?) ?? const {}),
+      projection: (projectionRaw is Map)
+          ? PayrollProjection.fromJson(
+              projectionRaw
+                  .map((key, value) => MapEntry(key.toString(), value)),
+            )
+          : null,
+      officeHours: _asMapList(
+        json['officeHours'],
+      ).map(PayrollOfficeHour.fromJson).toList(),
       classes: _asMapList(json['classes']).map(PayrollClass.fromJson).toList(),
     );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'month': month,
+      'year': year,
+      'timezone': timezone,
+      'summary': summary.toJson(),
+      'projection': projection?.toJson(),
+      'officeHours': officeHours.map((item) => item.toJson()).toList(),
+      'classes': classes.map((item) => item.toJson()).toList(),
+    };
   }
 }
 
