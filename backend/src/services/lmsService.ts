@@ -29,9 +29,75 @@ function isAuthRelatedMessage(message: string | undefined): boolean {
     }
 
     const normalized = message.toLowerCase();
-    return normalized.includes('unauth')
-        || normalized.includes('not authenticated')
-        || normalized.includes('jwt expired');
+    const authIndicators = [
+        'unauth',
+        'not authenticated',
+        'jwt expired',
+        'authentication failed',
+        'failed to build auth user',
+        'invalid token',
+        'token expired',
+        'id token'
+    ];
+
+    return authIndicators.some((indicator) => normalized.includes(indicator));
+}
+
+function extractAxiosErrorMessage(error: unknown): string {
+    if (!axios.isAxiosError(error)) {
+        return '';
+    }
+
+    const chunks: string[] = [];
+    if (error.message) {
+        chunks.push(error.message);
+    }
+
+    const responseData = error.response?.data;
+    if (typeof responseData === 'string') {
+        chunks.push(responseData);
+    } else if (responseData && typeof responseData === 'object') {
+        const data = responseData as { message?: unknown; error?: unknown; detail?: unknown };
+        if (typeof data.message === 'string') {
+            chunks.push(data.message);
+        }
+        if (typeof data.error === 'string') {
+            chunks.push(data.error);
+        }
+        if (typeof data.detail === 'string') {
+            chunks.push(data.detail);
+        }
+
+        try {
+            chunks.push(JSON.stringify(responseData));
+        } catch {
+            // Ignore stringify failures.
+        }
+    }
+
+    return chunks.join(' | ');
+}
+
+function isHttpStatusAuthError(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) {
+        return false;
+    }
+
+    const statusCode = error.response?.status;
+    return statusCode === 401 || statusCode === 403;
+}
+
+function isHttpAuthLikeError(error: unknown): boolean {
+    if (isHttpStatusAuthError(error)) {
+        return true;
+    }
+
+    const combined = extractAxiosErrorMessage(error);
+    return isAuthRelatedMessage(combined);
+}
+
+function isHttpAuthError(error: unknown): boolean {
+    return isHttpAuthLikeError(error);
 }
 
 function parseGraphqlErrors(errors: unknown): { message: string; isAuthError: boolean } {
@@ -63,15 +129,6 @@ function parseGraphqlErrors(errors: unknown): { message: string; isAuthError: bo
         message: messages.filter(Boolean).join(' | ') || 'GraphQL returned unknown errors',
         isAuthError
     };
-}
-
-function isHttpAuthError(error: unknown): boolean {
-    if (!axios.isAxiosError(error)) {
-        return false;
-    }
-
-    const statusCode = error.response?.status;
-    return statusCode === 401 || statusCode === 403;
 }
 
 export type FetchUniqueClassesResult = {
