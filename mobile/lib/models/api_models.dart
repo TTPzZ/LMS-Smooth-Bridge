@@ -118,6 +118,8 @@ class ReminderItem {
   final String className;
   final String? classStatus;
   final String? classEndDate;
+  final String? roleName;
+  final String? roleShortName;
   final String slotId;
   final int? slotIndex;
   final String slotStartTime;
@@ -134,6 +136,8 @@ class ReminderItem {
     required this.className,
     required this.classStatus,
     required this.classEndDate,
+    required this.roleName,
+    required this.roleShortName,
     required this.slotId,
     required this.slotIndex,
     required this.slotStartTime,
@@ -152,6 +156,8 @@ class ReminderItem {
       className: (json['className'] ?? '').toString(),
       classStatus: json['classStatus']?.toString(),
       classEndDate: json['classEndDate']?.toString(),
+      roleName: json['roleName']?.toString(),
+      roleShortName: json['roleShortName']?.toString(),
       slotId: (json['slotId'] ?? '').toString(),
       slotIndex: (json['slotIndex'] is int) ? json['slotIndex'] as int : null,
       slotStartTime: (json['slotStartTime'] ?? '').toString(),
@@ -171,6 +177,8 @@ class ReminderItem {
       'className': className,
       'classStatus': classStatus,
       'classEndDate': classEndDate,
+      'roleName': roleName,
+      'roleShortName': roleShortName,
       'slotId': slotId,
       'slotIndex': slotIndex,
       'slotStartTime': slotStartTime,

@@ -4,6 +4,7 @@ import 'models/auth_models.dart';
 import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/auth_session_manager.dart';
+import 'theme/app_theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -61,10 +62,7 @@ class _SmoothBridgeAppState extends State<SmoothBridgeApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'LMS Smooth Bridge',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
-        useMaterial3: true,
-      ),
+      theme: AppTheme.light(),
       home: _isRestoringSession
           ? const _BootScreen()
           : (_session == null

@@ -413,12 +413,40 @@ export class LmsService {
                   name
                   status
                   endDate
+                  teachers {
+                    _id
+                    isActive
+                    teacher {
+                      id
+                      username
+                      fullName
+                    }
+                    role {
+                      id
+                      name
+                      shortName
+                    }
+                  }
                   slots {
                     _id
                     index
                     date
                     startTime
                     endTime
+                    teachers {
+                      _id
+                      isActive
+                      teacher {
+                        id
+                        username
+                        fullName
+                      }
+                      role {
+                        id
+                        name
+                        shortName
+                      }
+                    }
                     studentAttendance {
                       _id
                       status

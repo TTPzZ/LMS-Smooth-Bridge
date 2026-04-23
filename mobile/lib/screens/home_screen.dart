@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
@@ -9,6 +7,7 @@ import '../models/auth_models.dart';
 import '../services/auth_session_manager.dart';
 import '../services/backend_api_service.dart';
 import '../services/dashboard_cache_service.dart';
+import '../theme/app_theme.dart';
 
 class HomeScreen extends StatefulWidget {
   final AuthSessionManager sessionManager;
@@ -40,13 +39,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   late AuthSession _session;
   bool _isHandlingAuthFailure = false;
-
-  String? _selectedAttendanceClassId;
-  String? _selectedAttendanceSlotId;
+  int _selectedIndex = 0;
   late int _selectedPayrollMonth;
   late int _selectedPayrollYear;
-  final Map<String, _AttendanceStatus> _attendanceStatuses = {};
-  bool _isSubmittingAttendance = false;
 
   @override
   void initState() {
@@ -66,7 +61,7 @@ class _HomeScreenState extends State<HomeScreen> {
       baseUrl: AppConfig.apiBaseUrl.trim(),
       idTokenProvider: _provideIdToken,
     );
-    _reloadAll();
+    _setFutures(forceNetwork: false);
   }
 
   @override
@@ -106,8 +101,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Session expired. Please sign in again.'),
-        ),
+            content:
+                Text('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.')),
       );
     }
 
@@ -164,7 +159,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     final reminders = await _api.getAttendanceReminders(
-      lookAheadMinutes: 240,
+      lookAheadMinutes: 7 * 24 * 60,
+      maxSlots: 200,
       activeOnly: true,
     );
     await _dashboardCache.saveReminders(
@@ -204,7 +200,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return payroll;
   }
 
-  void _reloadAll({bool forceNetwork = false}) {
+  void _setFutures({required bool forceNetwork}) {
     final username = _session.username.trim().toLowerCase();
     setState(() {
       _classesFuture = _loadClasses(
@@ -234,6 +230,28 @@ class _HomeScreenState extends State<HomeScreen> {
         forceNetwork: forceNetwork,
       );
     });
+  }
+
+  Future<void> _forceRefreshAll() async {
+    _setFutures(forceNetwork: true);
+    try {
+      await Future.wait([
+        _classesFuture,
+        _remindersFuture,
+        _payrollFuture,
+      ]);
+    } catch (_) {
+      // Errors are rendered by each FutureBuilder.
+    }
+  }
+
+  Future<void> _forceRefreshPayroll() async {
+    _reloadPayrollOnly(forceNetwork: true);
+    try {
+      await _payrollFuture;
+    } catch (_) {
+      // Errors are rendered by FutureBuilder.
+    }
   }
 
   List<int> _availablePayrollYears() {
@@ -278,13 +296,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (normalized.isEmpty) {
       return false;
     }
-    if (normalized == 'TA') {
-      return true;
-    }
-    if (normalized.contains('ASSISTANT')) {
-      return true;
-    }
-    return false;
+    return normalized == 'TA' || normalized.contains('ASSISTANT');
   }
 
   bool _isMakeupRole(String rawRole) {
@@ -292,12 +304,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (normalized.isEmpty) {
       return false;
     }
-    if (normalized == 'MAKEUP' ||
+    return normalized == 'MAKEUP' ||
         normalized == 'MAKE UP' ||
-        normalized.contains('MAKEUP')) {
-      return true;
-    }
-    return false;
+        normalized.contains('MAKEUP');
   }
 
   bool _isFullPayRole(String rawRole) {
@@ -347,10 +356,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (normalized.isEmpty) {
       return false;
     }
-    if (normalized == 'FIXED' || normalized.contains('FIXED')) {
-      return true;
-    }
-    return false;
+    return normalized == 'FIXED' || normalized.contains('FIXED');
   }
 
   bool _isTrialOfficeHourType(String rawType) {
@@ -358,10 +364,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (normalized.isEmpty) {
       return false;
     }
-    if (normalized == 'TRIAL' || normalized.contains('TRIAL')) {
-      return true;
-    }
-    return false;
+    return normalized == 'TRIAL' || normalized.contains('TRIAL');
   }
 
   bool _isMakeupOfficeHourType(String rawType) {
@@ -369,12 +372,9 @@ class _HomeScreenState extends State<HomeScreen> {
     if (normalized.isEmpty) {
       return false;
     }
-    if (normalized == 'MAKEUP' ||
+    return normalized == 'MAKEUP' ||
         normalized == 'MAKE UP' ||
-        normalized.contains('MAKEUP')) {
-      return true;
-    }
-    return false;
+        normalized.contains('MAKEUP');
   }
 
   double _calculateOfficeHourIncome(
@@ -390,7 +390,8 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (_isTrialOfficeHourType(rawType)) {
-      final studentCount = officeHour.studentCount < 0 ? 0 : officeHour.studentCount;
+      final studentCount =
+          officeHour.studentCount < 0 ? 0 : officeHour.studentCount;
       if (studentCount <= 0) {
         return 0;
       }
@@ -404,8 +405,17 @@ class _HomeScreenState extends State<HomeScreen> {
     return 0;
   }
 
-  double _slotBillableHours(PayrollSlot slot) {
-    return slot.durationHours;
+  double _calculateClassIncome(PayrollClass cls, double hourlyRate) {
+    var total = 0.0;
+    for (final slot in cls.slots) {
+      total += slot.durationHours *
+          _roleMultiplier(
+            roleShortName: slot.roleShortName,
+            roleName: slot.roleName,
+          ) *
+          hourlyRate;
+    }
+    return total;
   }
 
   _PayrollMoneySummary _calculatePayrollMoney(
@@ -416,9 +426,10 @@ class _HomeScreenState extends State<HomeScreen> {
     var actualSlots = 0;
     var actualHours = 0.0;
     var classIncome = 0.0;
+
     for (final cls in payroll.classes) {
       for (final slot in cls.slots) {
-        final billableHours = _slotBillableHours(slot) *
+        final billableHours = slot.durationHours *
             _roleMultiplier(
               roleShortName: slot.roleShortName,
               roleName: slot.roleName,
@@ -486,6 +497,12 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  String _formatMoney(double amount) {
+    final rounded = amount.roundToDouble();
+    final formatter = NumberFormat('#,##0', 'en_US');
+    return '${formatter.format(rounded)} VND';
+  }
+
   String _formatDateTime(String? iso) {
     if (iso == null || iso.isEmpty) {
       return '-';
@@ -494,1008 +511,658 @@ class _HomeScreenState extends State<HomeScreen> {
     if (parsed == null) {
       return iso;
     }
-    return DateFormat('yyyy-MM-dd HH:mm').format(parsed.toLocal());
+    return DateFormat('dd/MM/yyyy - HH:mm').format(parsed.toLocal());
   }
 
-  String _formatSlotDate(String? iso) {
+  DateTime? _parseDateTimeLoose(String? value) {
+    final raw = (value ?? '').toString().trim();
+    if (raw.isEmpty) {
+      return null;
+    }
+
+    final parsed = DateTime.tryParse(raw);
+    if (parsed != null) {
+      return parsed.toLocal();
+    }
+
+    if (RegExp(r'^\d{13}$').hasMatch(raw)) {
+      final ms = int.tryParse(raw);
+      if (ms != null) {
+        return DateTime.fromMillisecondsSinceEpoch(ms).toLocal();
+      }
+    }
+
+    if (RegExp(r'^\d{10}$').hasMatch(raw)) {
+      final seconds = int.tryParse(raw);
+      if (seconds != null) {
+        return DateTime.fromMillisecondsSinceEpoch(seconds * 1000).toLocal();
+      }
+    }
+
+    return null;
+  }
+
+  int _sortTimeMs(String? value) {
+    final parsed = _parseDateTimeLoose(value);
+    if (parsed == null) {
+      return 1 << 30;
+    }
+    return parsed.millisecondsSinceEpoch;
+  }
+
+  String _weekdayVi(int weekday) {
+    switch (weekday) {
+      case DateTime.monday:
+        return 'Thá»© Hai';
+      case DateTime.tuesday:
+        return 'Thá»© Ba';
+      case DateTime.wednesday:
+        return 'Thá»© TÆ°';
+      case DateTime.thursday:
+        return 'Thá»© NÄƒm';
+      case DateTime.friday:
+        return 'Thá»© SÃ¡u';
+      case DateTime.saturday:
+        return 'Thá»© Báº£y';
+      case DateTime.sunday:
+      default:
+        return 'Chá»§ Nháº­t';
+    }
+  }
+
+  String _formatDayHeader(DateTime date) {
+    return '${_weekdayVi(date.weekday)}, ${DateFormat('dd/MM/yyyy').format(date)}';
+  }
+
+  String _formatShortDate(String? iso) {
     if (iso == null || iso.isEmpty) {
-      return '--/--';
+      return '--';
     }
     final parsed = DateTime.tryParse(iso);
     if (parsed == null) {
-      return '--/--';
+      return '--';
     }
     return DateFormat('dd/MM').format(parsed.toLocal());
   }
 
-  String _formatSlotTime(String? iso) {
-    if (iso == null || iso.isEmpty) {
-      return '--:--';
-    }
-    final parsed = DateTime.tryParse(iso);
-    if (parsed == null) {
-      return '--:--';
-    }
-    return DateFormat('HH:mm').format(parsed.toLocal());
-  }
-
-  String _formatMoney(double amount) {
-    final rounded = amount.roundToDouble();
-    final formatter = NumberFormat('#,##0', 'en_US');
-    return '${formatter.format(rounded)} VND';
-  }
-
-  String _studentKey(String classId, String studentName) {
-    return '$classId::$studentName';
-  }
-
-  ClassSummary? _resolveAttendanceClass(List<ClassSummary> classes) {
-    if (classes.isEmpty) {
-      return null;
-    }
-
-    if (_selectedAttendanceClassId != null) {
-      for (final cls in classes) {
-        if (cls.classId == _selectedAttendanceClassId) {
-          return cls;
-        }
-      }
-    }
-
-    for (final cls in classes) {
-      if (cls.students.isNotEmpty) {
-        return cls;
-      }
-    }
-
-    return classes.first;
-  }
-
-  List<_AttendanceSlotOption> _buildAttendanceSlotOptions(
-    ClassSummary selectedClass,
-    List<ReminderItem> reminders,
-  ) {
-    final options = <_AttendanceSlotOption>[];
-    final seenSlotIds = <String>{};
-
-    for (final reminder in reminders) {
-      if (reminder.classId != selectedClass.classId) {
-        continue;
-      }
-
-      if (seenSlotIds.contains(reminder.slotId)) {
-        continue;
-      }
-      seenSlotIds.add(reminder.slotId);
-
-      options.add(
-        _AttendanceSlotOption(
-          slotId: reminder.slotId,
-          slotIndex: reminder.slotIndex,
-          label:
-              'Slot ${reminder.slotIndex ?? '-'} | ${_formatDateTime(reminder.attendanceOpenAt)} -> ${_formatDateTime(reminder.attendanceCloseAt)}',
-          isWindowOpen: reminder.isWindowOpen,
-          attendanceOpenAt: reminder.attendanceOpenAt,
-          attendanceCloseAt: reminder.attendanceCloseAt,
-        ),
-      );
-    }
-
-    final nextWindow = selectedClass.nextAttendanceWindow;
-    if (nextWindow != null && !seenSlotIds.contains(nextWindow.slotId)) {
-      options.add(
-        _AttendanceSlotOption(
-          slotId: nextWindow.slotId,
-          slotIndex: nextWindow.slotIndex,
-          label:
-              'Next slot ${nextWindow.slotIndex ?? '-'} | ${_formatDateTime(nextWindow.attendanceOpenAt)} -> ${_formatDateTime(nextWindow.attendanceCloseAt)}',
-          isWindowOpen: nextWindow.isWindowOpen,
-          attendanceOpenAt: nextWindow.attendanceOpenAt,
-          attendanceCloseAt: nextWindow.attendanceCloseAt,
-        ),
-      );
-    }
-
-    if (options.isEmpty) {
-      options.add(
-        const _AttendanceSlotOption(
-          slotId: '',
-          slotIndex: null,
-          label: 'No active attendance window for this class',
-          isWindowOpen: false,
-          attendanceOpenAt: '',
-          attendanceCloseAt: '',
-          isPlaceholder: true,
-        ),
-      );
-    }
-
-    return options;
-  }
-
-  String _resolveAttendanceSlotId(List<_AttendanceSlotOption> options) {
-    if (options.isEmpty) {
-      return '';
-    }
-
-    if (_selectedAttendanceSlotId != null) {
-      for (final option in options) {
-        if (option.slotId == _selectedAttendanceSlotId) {
-          return option.slotId;
-        }
-      }
-    }
-
-    for (final option in options) {
-      if (option.isWindowOpen) {
-        return option.slotId;
-      }
-    }
-
-    return options.first.slotId;
-  }
-
-  void _setAllStudentsStatus(
-      ClassSummary selectedClass, _AttendanceStatus status) {
-    setState(() {
-      for (final student in selectedClass.students) {
-        _attendanceStatuses[_studentKey(selectedClass.classId, student)] =
-            status;
-      }
-    });
-  }
-
-  int _countRecordedStudents(ClassSummary selectedClass) {
-    return selectedClass.students.length;
-  }
-
-  Map<_AttendanceStatus, int> _countByStatus(ClassSummary selectedClass) {
-    final summary = <_AttendanceStatus, int>{
-      for (final status in _AttendanceStatus.values) status: 0,
-    };
-
-    for (final student in selectedClass.students) {
-      final key = _studentKey(selectedClass.classId, student);
-      final selected = _attendanceStatuses[key] ?? _AttendanceStatus.attended;
-      summary[selected] = (summary[selected] ?? 0) + 1;
-    }
-
-    return summary;
-  }
-
-  String _previousSlotLabel(_AttendanceSlotOption selectedSlot, int offset) {
-    final currentIndex = selectedSlot.slotIndex;
-    if (currentIndex == null) {
-      return offset == 2 ? '#1' : '#2';
-    }
-
-    final previousIndex = currentIndex - offset;
-    if (previousIndex <= 0) {
-      return '#-';
-    }
-    return '#$previousIndex';
-  }
-
-  Widget _buildStudentStatusAction({
-    required _AttendanceStatus status,
-    required _AttendanceStatus? selectedStatus,
-    required VoidCallback onTap,
-  }) {
-    final isSelected = selectedStatus == status;
-    final color = status.color;
-
-    return SizedBox(
-      height: 34,
-      child: OutlinedButton.icon(
-        onPressed: onTap,
-        style: OutlinedButton.styleFrom(
-          foregroundColor: isSelected ? color : Colors.black54,
-          side: BorderSide(
-            color: isSelected ? color : Colors.black26,
-          ),
-          backgroundColor: isSelected ? color.withValues(alpha: 0.12) : null,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-        ),
-        icon: Icon(status.icon, size: 16),
-        label: Text(
-          status.displayLabel,
-          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _submitAttendanceDraft(
-    ClassSummary selectedClass,
-    _AttendanceSlotOption selectedSlot,
-  ) async {
-    if (_isSubmittingAttendance) {
-      return;
-    }
-
-    if (selectedSlot.slotId.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('This class has no active attendance slot right now.'),
-        ),
-      );
-      return;
-    }
-
-    setState(() {
-      _isSubmittingAttendance = true;
-    });
-
-    try {
-      final payload = {
-        'classId': selectedClass.classId,
-        'className': selectedClass.className,
-        'slotId': selectedSlot.slotId,
-        'attendanceOpenAt': selectedSlot.attendanceOpenAt,
-        'attendanceCloseAt': selectedSlot.attendanceCloseAt,
-        'submittedAt': DateTime.now().toIso8601String(),
-        'students': selectedClass.students.map((student) {
-          final key = _studentKey(selectedClass.classId, student);
-          final status = _attendanceStatuses[key] ?? _AttendanceStatus.attended;
-          return {
-            'studentName': student,
-            'status': status.code,
-            'comment': '',
-          };
-        }).toList(),
-      };
-
-      await Future<void>.delayed(const Duration(milliseconds: 350));
-
-      if (!mounted) {
-        return;
-      }
-
-      final prettyJson = const JsonEncoder.withIndent('  ').convert(payload);
-      await showDialog<void>(
-        context: context,
-        builder: (context) {
-          return AlertDialog(
-            title: const Text('Attendance Payload Preview'),
-            content: SizedBox(
-              width: 540,
-              child: SingleChildScrollView(
-                child: SelectableText(
-                  prettyJson,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                ),
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('Close'),
-              ),
-            ],
-          );
-        },
-      );
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isSubmittingAttendance = false;
-        });
-      }
-    }
-  }
-
   Widget _buildUserHeader() {
-    return Card(
-      margin: const EdgeInsets.fromLTRB(12, 12, 12, 8),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: [
-            CircleAvatar(
-              radius: 22,
-              backgroundColor: const Color(0xFFDCE6FF),
-              child: Text(
-                _session.username.isEmpty
-                    ? '?'
-                    : _session.username.substring(0, 1).toUpperCase(),
-                style: const TextStyle(
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF1D3FC2),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Xin chao, ${_session.username}',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 16,
-                    ),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    _session.email,
-                    style: const TextStyle(color: Colors.black54),
-                  ),
-                ],
-              ),
-            ),
+    final accents = Theme.of(context).extension<AppAccentColors>()!;
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(20),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Colors.blue.shade700,
+            Colors.blue.shade500,
+            const Color(0xFF07A5A5),
           ],
         ),
       ),
-    );
-  }
-
-  Widget _buildClassesTab() {
-    return FutureBuilder<List<ClassSummary>>(
-      future: _classesFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return _ErrorView(message: snapshot.error.toString());
-        }
-
-        final classes = snapshot.data ?? const [];
-        if (classes.isEmpty) {
-          return const _EmptyView(message: 'No running classes found.');
-        }
-
-        return ListView.separated(
-          itemCount: classes.length,
-          separatorBuilder: (_, __) => const Divider(height: 1),
-          itemBuilder: (context, index) {
-            final cls = classes[index];
-            final next = cls.nextAttendanceWindow;
-            final sampleStudents = cls.students.take(3).join(', ');
-            return ListTile(
-              title: Text(cls.className),
-              subtitle: Text(
-                'Status: ${cls.status ?? '-'}\n'
-                'Students: ${cls.totalStudents} | Slots: ${cls.totalSlots}\n'
-                'Sample: ${sampleStudents.isEmpty ? '-' : sampleStudents}\n'
-                'Next attendance: ${next != null ? _formatDateTime(next.attendanceOpenAt) : '-'}',
-              ),
-              isThreeLine: true,
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildRemindersTab() {
-    return FutureBuilder<List<ReminderItem>>(
-      future: _remindersFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return _ErrorView(message: snapshot.error.toString());
-        }
-
-        final reminders = snapshot.data ?? const [];
-        if (reminders.isEmpty) {
-          return const _EmptyView(
-              message: 'No reminder slots in look-ahead window.');
-        }
-
-        return ListView.separated(
-          itemCount: reminders.length,
-          separatorBuilder: (_, __) => const Divider(height: 1),
-          itemBuilder: (context, index) {
-            final item = reminders[index];
-            return ListTile(
-              leading: Icon(
-                item.isWindowOpen ? Icons.alarm_on : Icons.schedule,
-                color: item.isWindowOpen ? Colors.green : Colors.orange,
-              ),
-              title: Text(item.className),
-              subtitle: Text(
-                'Role slot: ${item.slotIndex ?? '-'} | Students: ${item.totalStudentsInSlot}\n'
-                'Open: ${_formatDateTime(item.attendanceOpenAt)}\n'
-                'Close: ${_formatDateTime(item.attendanceCloseAt)}',
-              ),
-              trailing: Text(
-                item.isWindowOpen
-                    ? 'OPEN'
-                    : 'T-${item.minutesUntilWindowOpen}m',
-                style: const TextStyle(fontWeight: FontWeight.w700),
-              ),
-              isThreeLine: true,
-            );
-          },
-        );
-      },
-    );
-  }
-
-  Widget _buildAttendanceTab() {
-    return FutureBuilder<List<ClassSummary>>(
-      future: _classesFuture,
-      builder: (context, classesSnapshot) {
-        if (classesSnapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (classesSnapshot.hasError) {
-          return _ErrorView(message: classesSnapshot.error.toString());
-        }
-
-        final classes = classesSnapshot.data ?? const [];
-        if (classes.isEmpty) {
-          return const _EmptyView(
-              message: 'No classes available for attendance.');
-        }
-
-        return FutureBuilder<List<ReminderItem>>(
-          future: _remindersFuture,
-          builder: (context, remindersSnapshot) {
-            if (remindersSnapshot.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (remindersSnapshot.hasError) {
-              return _ErrorView(message: remindersSnapshot.error.toString());
-            }
-
-            final reminders = remindersSnapshot.data ?? const [];
-            final selectedClass = _resolveAttendanceClass(classes);
-            if (selectedClass == null) {
-              return const _EmptyView(message: 'No class selected.');
-            }
-
-            final slotOptions =
-                _buildAttendanceSlotOptions(selectedClass, reminders);
-            final selectedSlotId = _resolveAttendanceSlotId(slotOptions);
-            final selectedSlot = slotOptions.firstWhere(
-              (option) => option.slotId == selectedSlotId,
-              orElse: () => slotOptions.first,
-            );
-            final totalStudents = selectedClass.students.length;
-            final recordedStudents = _countRecordedStudents(selectedClass);
-            final statusSummary = _countByStatus(selectedClass);
-            final currentSlotLabel = selectedSlot.slotIndex == null
-                ? 'Buoi hien tai'
-                : '#${selectedSlot.slotIndex}';
-
-            return ListView(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
-              children: [
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Cau hinh diem danh',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        DropdownButtonFormField<String>(
-                          initialValue: selectedClass.classId,
-                          isExpanded: true,
-                          decoration: const InputDecoration(
-                            border: OutlineInputBorder(),
-                            labelText: 'Lop hoc',
-                            isDense: true,
-                          ),
-                          items: classes
-                              .map(
-                                (cls) => DropdownMenuItem<String>(
-                                  value: cls.classId,
-                                  child: Text(
-                                      '${cls.className} (${cls.totalStudents} hoc vien)'),
-                                ),
-                              )
-                              .toList(),
-                          onChanged: (value) {
-                            if (value == null) {
-                              return;
-                            }
-                            setState(() {
-                              _selectedAttendanceClassId = value;
-                              _selectedAttendanceSlotId = null;
-                            });
-                          },
-                        ),
-                        const SizedBox(height: 12),
-                        DropdownButtonFormField<String>(
-                          initialValue: selectedSlotId,
-                          isExpanded: true,
-                          decoration: const InputDecoration(
-                            border: OutlineInputBorder(),
-                            labelText: 'Buoi diem danh',
-                            isDense: true,
-                          ),
-                          items: slotOptions
-                              .map(
-                                (slot) => DropdownMenuItem<String>(
-                                  value: slot.slotId,
-                                  child: Row(
-                                    children: [
-                                      Expanded(child: Text(slot.label)),
-                                      if (slot.isWindowOpen)
-                                        const Padding(
-                                          padding: EdgeInsets.only(left: 8),
-                                          child: Text(
-                                            'OPEN',
-                                            style: TextStyle(
-                                              color: Colors.green,
-                                              fontWeight: FontWeight.w700,
-                                            ),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              )
-                              .toList(),
-                          onChanged: (value) {
-                            if (value == null) {
-                              return;
-                            }
-                            setState(() {
-                              _selectedAttendanceSlotId = value;
-                            });
-                          },
-                        ),
-                        const SizedBox(height: 10),
-                        Text(
-                          'Khung mo: ${_formatDateTime(selectedSlot.attendanceOpenAt)}  |  Dong: ${_formatDateTime(selectedSlot.attendanceCloseAt)}',
-                          style: const TextStyle(color: Colors.black54),
-                        ),
-                        const SizedBox(height: 6),
-                        const Text(
-                          'Luu y: nut Save hien chi preview payload de test flow.',
-                          style: TextStyle(
-                            color: Colors.black54,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          CircleAvatar(
+            radius: 24,
+            backgroundColor: Colors.white.withValues(alpha: 0.22),
+            child: Text(
+              _session.username.isEmpty
+                  ? '?'
+                  : _session.username.substring(0, 1).toUpperCase(),
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
                   ),
-                ),
-                if (selectedClass.students.isEmpty)
-                  const Card(
-                    child: Padding(
-                      padding: EdgeInsets.all(12),
-                      child: Text(
-                        'Khong co hoc vien trong lop nay. Thu reload hoac doi lop.',
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Xin chào, ${_session.username}',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
                       ),
-                    ),
-                  )
-                else
-                  Card(
-                    margin: const EdgeInsets.only(top: 8),
-                    clipBehavior: Clip.antiAlias,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _session.email,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.92),
+                      ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Chúc bạn có một ngày dạy thật hiệu quả.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.white.withValues(alpha: 0.84),
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          Icon(
+            Icons.auto_awesome_rounded,
+            color: accents.warning.withValues(alpha: 0.85),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOverviewPage() {
+    return RefreshIndicator(
+      onRefresh: _forceRefreshAll,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+        children: [
+          _buildUserHeader(),
+          const SizedBox(height: 10),
+          _SectionCard(
+            title: 'Tổng quan nhanh',
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                FutureBuilder<List<ClassSummary>>(
+                  future: _classesFuture,
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return const _KpiTile.loading(label: 'Lớp đang dạy');
+                    }
+                    final classes = snapshot.data ?? const <ClassSummary>[];
+                    final students = classes.fold<int>(
+                      0,
+                      (sum, cls) => sum + cls.totalStudents,
+                    );
+                    return _KpiTile(
+                      label: 'Lớp đang dạy',
+                      value: classes.length.toString(),
+                      hint: '$students học viên',
+                      icon: Icons.menu_book_rounded,
+                    );
+                  },
+                ),
+                FutureBuilder<List<ReminderItem>>(
+                  future: _remindersFuture,
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return const _KpiTile.loading(label: 'Lịch sắp tới');
+                    }
+                    final reminders = snapshot.data ?? const <ReminderItem>[];
+                    final openCount =
+                        reminders.where((item) => item.isWindowOpen).length;
+                    return _KpiTile(
+                      label: 'Lịch sắp tới',
+                      value: reminders.length.toString(),
+                      hint: '$openCount khung đang mở',
+                      icon: Icons.event_available_rounded,
+                    );
+                  },
+                ),
+                FutureBuilder<PayrollResponse>(
+                  future: _payrollFuture,
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return const _KpiTile.loading(label: 'Thu nhập');
+                    }
+                    final payroll = snapshot.data!;
+                    final money = _calculatePayrollMoney(
+                      payroll,
+                      _parseHourlyRate(),
+                      _parseManualAdjustment(),
+                    );
+                    return _KpiTile(
+                      label: 'Thu nhập hiện tại',
+                      value: _formatMoney(money.actualIncome),
+                      hint: 'Tháng ${payroll.month}/${payroll.year}',
+                      icon: Icons.payments_rounded,
+                      wide: true,
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          _SectionCard(
+            title: 'Lịch dạy gần nhất',
+            subtitle: 'Tập trung vào các ca cần xử lý sớm',
+            child: FutureBuilder<List<ReminderItem>>(
+              future: _remindersFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const _InlineLoading();
+                }
+                if (snapshot.hasError) {
+                  return _ErrorLabel(message: snapshot.error.toString());
+                }
+                final reminders = snapshot.data ?? const <ReminderItem>[];
+                if (reminders.isEmpty) {
+                  return const _EmptyLabel(
+                    message: 'Không có lịch sắp tới trong khung hiện tại.',
+                  );
+                }
+                return Column(
+                  children: reminders.take(4).map((reminder) {
+                    final badge = _ReminderBadge.fromReminder(reminder);
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: Colors.blueGrey.shade100),
+                      ),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 4,
+                        ),
+                        title: Text(
+                          reminder.className,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        subtitle: Text(
+                          'Slot ${reminder.slotIndex ?? '-'}  ·  ${_formatDateTime(reminder.slotStartTime)}',
+                        ),
+                        trailing: _Pill(
+                          label: badge.label,
+                          background: badge.background,
+                          foreground: badge.foreground,
+                          icon: badge.icon,
+                        ),
+                      ),
+                    );
+                  }).toList(),
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 12),
+          _SectionCard(
+            title: 'Lớp học đang phụ trách',
+            child: FutureBuilder<List<ClassSummary>>(
+              future: _classesFuture,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const _InlineLoading();
+                }
+                if (snapshot.hasError) {
+                  return _ErrorLabel(message: snapshot.error.toString());
+                }
+                final classes = snapshot.data ?? const <ClassSummary>[];
+                if (classes.isEmpty) {
+                  return const _EmptyLabel(message: 'Chưa có lớp đang chạy.');
+                }
+
+                return Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: classes
+                      .take(8)
+                      .map(
+                        (cls) => Chip(
+                          avatar: const Icon(Icons.school_rounded, size: 16),
+                          label: Text(
+                            '${cls.className} · ${cls.totalStudents} HV',
+                          ),
+                        ),
+                      )
+                      .toList(),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildClassesPage() {
+    return RefreshIndicator(
+      onRefresh: _forceRefreshAll,
+      child: FutureBuilder<List<ClassSummary>>(
+        future: _classesFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return _ErrorView(message: snapshot.error.toString());
+          }
+
+          final classes = (snapshot.data ?? const <ClassSummary>[])
+            ..sort((a, b) => a.className.compareTo(b.className));
+
+          if (classes.isEmpty) {
+            return const _EmptyView(message: 'Không có lớp đang hoạt động.');
+          }
+
+          return ListView.separated(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            itemCount: classes.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 10),
+            itemBuilder: (context, index) {
+              final cls = classes[index];
+              final studentsPreview = cls.students.take(6).toList();
+              final hiddenStudents =
+                  cls.students.length - studentsPreview.length;
+              final nextWindow = cls.nextAttendanceWindow;
+              return Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              cls.className,
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                          ),
+                          _Pill(
+                            label: (cls.status ?? 'RUNNING').toUpperCase(),
+                            background: const Color(0xFFE3EEFF),
+                            foreground: const Color(0xFF154EA3),
+                            icon: Icons.circle,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _MiniStat(
+                            icon: Icons.group_rounded,
+                            label: '${cls.totalStudents} học viên',
+                          ),
+                          _MiniStat(
+                            icon: Icons.layers_rounded,
+                            label: '${cls.totalSlots} slots',
+                          ),
+                          _MiniStat(
+                            icon: Icons.calendar_today_rounded,
+                            label:
+                                'Kết thúc: ${_formatShortDate(cls.classEndDate)}',
+                          ),
+                        ],
+                      ),
+                      if (nextWindow != null) ...[
+                        const SizedBox(height: 10),
                         Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                          color: const Color(0xFFF5F7FB),
-                          child: Wrap(
-                            spacing: 10,
-                            runSpacing: 8,
-                            crossAxisAlignment: WrapCrossAlignment.center,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF3F7FF),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                selectedClass.className,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                  fontSize: 16,
-                                ),
+                              const Icon(
+                                Icons.alarm_on_rounded,
+                                size: 18,
+                                color: Color(0xFF1C4ED8),
                               ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 4,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF1F3BC8),
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
+                              const SizedBox(width: 8),
+                              Expanded(
                                 child: Text(
-                                  '$currentSlotLabel ${_formatSlotTime(selectedSlot.attendanceOpenAt)}',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                '$recordedStudents/$totalStudents da ghi nhan',
-                                style: const TextStyle(
-                                  color: Color(0xFF2E7D32),
-                                  fontWeight: FontWeight.w700,
+                                  'Khung điểm danh tiếp theo: '
+                                  '${_formatDateTime(nextWindow.attendanceOpenAt)} '
+                                  '- ${_formatDateTime(nextWindow.attendanceCloseAt)}',
                                 ),
                               ),
                             ],
                           ),
                         ),
-                        SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-                          child: ConstrainedBox(
-                            constraints: const BoxConstraints(minWidth: 860),
-                            child: Column(
-                              children: [
-                                Container(
-                                  padding:
-                                      const EdgeInsets.fromLTRB(6, 8, 6, 8),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFF7F8FC),
-                                    border: Border.all(color: Colors.black12),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      const SizedBox(
-                                        width: 260,
-                                        child: Text(
-                                          'Kiem tra hoc vien',
-                                          style: TextStyle(
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        width: 72,
-                                        child: Center(
-                                          child: Text(
-                                            _previousSlotLabel(selectedSlot, 2),
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.w600,
-                                              color: Colors.black54,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        width: 72,
-                                        child: Center(
-                                          child: Text(
-                                            _previousSlotLabel(selectedSlot, 1),
-                                            style: const TextStyle(
-                                              fontWeight: FontWeight.w600,
-                                              color: Colors.black54,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                      SizedBox(
-                                        width: 420,
-                                        child: Row(
-                                          children: [
-                                            Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                horizontal: 10,
-                                                vertical: 6,
-                                              ),
-                                              decoration: BoxDecoration(
-                                                color: const Color(0xFF2246F0),
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                              child: Text(
-                                                '$currentSlotLabel  ${_formatSlotTime(selectedSlot.attendanceOpenAt)} ${_formatSlotDate(selectedSlot.attendanceOpenAt)}',
-                                                style: const TextStyle(
-                                                  color: Colors.white,
-                                                  fontWeight: FontWeight.w700,
-                                                ),
-                                              ),
-                                            ),
-                                            const SizedBox(width: 10),
-                                            Expanded(
-                                              child: Text(
-                                                'Thao tac nhanh',
-                                                style: TextStyle(
-                                                  color: Colors.grey.shade700,
-                                                  fontWeight: FontWeight.w600,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                ...selectedClass.students.map((studentName) {
-                                  final studentKey = _studentKey(
-                                    selectedClass.classId,
-                                    studentName,
-                                  );
-                                  final selectedStatus =
-                                      _attendanceStatuses[studentKey] ??
-                                          _AttendanceStatus.attended;
-
-                                  return Container(
-                                    padding: const EdgeInsets.fromLTRB(
-                                      6,
-                                      10,
-                                      6,
-                                      10,
-                                    ),
-                                    decoration: const BoxDecoration(
-                                      border: Border(
-                                        bottom: BorderSide(
-                                          color: Color(0x11000000),
-                                        ),
-                                      ),
-                                    ),
-                                    child: Row(
-                                      children: [
-                                        SizedBox(
-                                          width: 260,
-                                          child: Row(
-                                            children: [
-                                              CircleAvatar(
-                                                radius: 16,
-                                                backgroundColor:
-                                                    const Color(0xFFE8EAEE),
-                                                child: Icon(
-                                                  Icons.person,
-                                                  size: 18,
-                                                  color: Colors.grey.shade600,
-                                                ),
-                                              ),
-                                              const SizedBox(width: 10),
-                                              Expanded(
-                                                child: Text(
-                                                  studentName,
-                                                  style: const TextStyle(
-                                                    fontWeight: FontWeight.w600,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                        const SizedBox(
-                                          width: 72,
-                                          child: Center(
-                                            child: Icon(
-                                              Icons.check,
-                                              color: Color(0xFF45A657),
-                                            ),
-                                          ),
-                                        ),
-                                        const SizedBox(
-                                          width: 72,
-                                          child: Center(
-                                            child: Icon(
-                                              Icons.check,
-                                              color: Color(0xFF45A657),
-                                            ),
-                                          ),
-                                        ),
-                                        SizedBox(
-                                          width: 420,
-                                          child: Row(
-                                            children: [
-                                              _buildStudentStatusAction(
-                                                status:
-                                                    _AttendanceStatus.attended,
-                                                selectedStatus: selectedStatus,
-                                                onTap: () {
-                                                  setState(() {
-                                                    _attendanceStatuses[
-                                                            studentKey] =
-                                                        _AttendanceStatus
-                                                            .attended;
-                                                  });
-                                                },
-                                              ),
-                                              const SizedBox(width: 6),
-                                              _buildStudentStatusAction(
-                                                status:
-                                                    _AttendanceStatus.absent,
-                                                selectedStatus: selectedStatus,
-                                                onTap: () {
-                                                  setState(() {
-                                                    _attendanceStatuses[
-                                                            studentKey] =
-                                                        _AttendanceStatus
-                                                            .absent;
-                                                  });
-                                                },
-                                              ),
-                                              const SizedBox(width: 10),
-                                              Expanded(
-                                                child: Text(
-                                                  selectedStatus.displayLabel,
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                  style: TextStyle(
-                                                    fontWeight: FontWeight.w600,
-                                                    color: selectedStatus.color,
-                                                  ),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }),
-                              ],
+                      ],
+                      if (studentsPreview.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            ...studentsPreview.map(
+                              (student) => Chip(
+                                label: Text(student),
+                                visualDensity: VisualDensity.compact,
+                              ),
                             ),
-                          ),
+                            if (hiddenStudents > 0)
+                              Chip(
+                                label: Text('+$hiddenStudents học viên'),
+                                visualDensity: VisualDensity.compact,
+                              ),
+                          ],
                         ),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-                          color: const Color(0xFFF7F9FD),
+                      ],
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSchedulePage() {
+    return RefreshIndicator(
+      onRefresh: _forceRefreshAll,
+      child: FutureBuilder<List<ReminderItem>>(
+        future: _remindersFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return _ErrorView(message: snapshot.error.toString());
+          }
+
+          final reminders = List<ReminderItem>.from(
+            snapshot.data ?? const <ReminderItem>[],
+          )..sort((a, b) {
+              final startDiff =
+                  _sortTimeMs(a.slotStartTime) - _sortTimeMs(b.slotStartTime);
+              if (startDiff != 0) {
+                return startDiff;
+              }
+              final endDiff =
+                  _sortTimeMs(a.slotEndTime) - _sortTimeMs(b.slotEndTime);
+              if (endDiff != 0) {
+                return endDiff;
+              }
+              return a.className.compareTo(b.className);
+            });
+
+          if (reminders.isEmpty) {
+            return const _EmptyView(message: 'Không có lịch dạy sắp tới.');
+          }
+
+          final grouped = <_ScheduleGroup>[];
+          for (final reminder in reminders) {
+            final slotStart = _parseDateTimeLoose(reminder.slotStartTime);
+            final key = slotStart != null
+                ? DateFormat('yyyy-MM-dd').format(slotStart)
+                : 'unknown';
+
+            if (grouped.isEmpty || grouped.last.key != key) {
+              grouped.add(
+                _ScheduleGroup(
+                  key: key,
+                  header: slotStart != null
+                      ? _formatDayHeader(slotStart)
+                      : 'Không rõ ngày',
+                  items: [reminder],
+                ),
+              );
+            } else {
+              grouped.last.items.add(reminder);
+            }
+          }
+
+          return ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            children: grouped.map((group) {
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8, left: 2),
+                      child: Text(
+                        group.header,
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  color: const Color(0xFF1C4ED8),
+                                ),
+                      ),
+                    ),
+                    ...group.items.map((reminder) {
+                      final badge = _ReminderBadge.fromReminder(reminder);
+                      final roleLabel = reminder.roleShortName ??
+                          reminder.roleName ??
+                          'Chưa rõ vai trò';
+
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        child: Padding(
+                          padding: const EdgeInsets.all(14),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Text(
-                                'Diem danh all',
-                                style: TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                ),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      reminder.className,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .titleMedium,
+                                    ),
+                                  ),
+                                  _Pill(
+                                    label: badge.label,
+                                    background: badge.background,
+                                    foreground: badge.foreground,
+                                    icon: badge.icon,
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Slot ${reminder.slotIndex ?? '-'} · '
+                                '${_formatDateTime(reminder.slotStartTime)} '
+                                '- ${_formatDateTime(reminder.slotEndTime)}',
+                              ),
+                              const SizedBox(height: 6),
+                              Text('Vai trò: $roleLabel'),
+                              Text(
+                                'Mở điểm danh: ${_formatDateTime(reminder.attendanceOpenAt)}',
+                              ),
+                              Text(
+                                'Đóng điểm danh: ${_formatDateTime(reminder.attendanceCloseAt)}',
                               ),
                               const SizedBox(height: 8),
                               Wrap(
                                 spacing: 8,
                                 runSpacing: 8,
                                 children: [
-                                  ...const [
-                                    _AttendanceStatus.attended,
-                                    _AttendanceStatus.absent,
-                                  ].map(
-                                    (status) => OutlinedButton.icon(
-                                      onPressed: () => _setAllStudentsStatus(
-                                        selectedClass,
-                                        status,
-                                      ),
-                                      style: OutlinedButton.styleFrom(
-                                        foregroundColor: status.color,
-                                      ),
-                                      icon: Icon(status.icon, size: 18),
-                                      label: Text(status.displayLabel),
-                                    ),
+                                  _MiniStat(
+                                    icon: Icons.group_rounded,
+                                    label:
+                                        '${reminder.totalStudentsInSlot} học viên',
+                                  ),
+                                  _MiniStat(
+                                    icon: Icons.schedule_rounded,
+                                    label: reminder.isWindowOpen
+                                        ? 'Còn ${reminder.minutesUntilWindowClose} phút'
+                                        : 'Còn ${reminder.minutesUntilWindowOpen} phút',
                                   ),
                                 ],
-                              ),
-                              const SizedBox(height: 10),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: [
-                                  ...const [
-                                    _AttendanceStatus.attended,
-                                    _AttendanceStatus.absent,
-                                  ].map(
-                                    (status) => Chip(
-                                      label: Text(
-                                        '${status.displayLabel}: ${statusSummary[status] ?? 0}',
-                                      ),
-                                      avatar: Icon(
-                                        status.icon,
-                                        size: 16,
-                                        color: status.color,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 10),
-                              Align(
-                                alignment: Alignment.centerRight,
-                                child: FilledButton.icon(
-                                  onPressed: _isSubmittingAttendance
-                                      ? null
-                                      : () => _submitAttendanceDraft(
-                                            selectedClass,
-                                            selectedSlot,
-                                          ),
-                                  icon: _isSubmittingAttendance
-                                      ? const SizedBox(
-                                          width: 16,
-                                          height: 16,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                          ),
-                                        )
-                                      : const Icon(Icons.save),
-                                  label: const Text('Save'),
-                                ),
                               ),
                             ],
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-              ],
-            );
-          },
-        );
-      },
+                      );
+                    }),
+                  ],
+                ),
+              );
+            }).toList(),
+          );
+        },
+      ),
     );
   }
 
-  Widget _buildPayrollTab() {
-    return FutureBuilder<PayrollResponse>(
-      future: _payrollFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return _ErrorView(message: snapshot.error.toString());
-        }
-        final payroll = snapshot.data;
-        if (payroll == null) {
-          return const _EmptyView(message: 'No payroll data.');
-        }
-        final monthOptions = List<int>.generate(12, (index) => index + 1);
-        final yearOptions = {
-          ..._availablePayrollYears(),
-          _selectedPayrollYear,
-        }.toList()
-          ..sort();
-        final hourlyRate = _parseHourlyRate();
-        final manualAdjustment = _parseManualAdjustment();
-        final moneySummary = _calculatePayrollMoney(
-          payroll,
-          hourlyRate,
-          manualAdjustment,
-        );
+  Widget _buildPayrollPage() {
+    final monthOptions = List<int>.generate(12, (index) => index + 1);
+    final yearOptions = {
+      ..._availablePayrollYears(),
+      _selectedPayrollYear,
+    }.toList()
+      ..sort();
 
-        return ListView(
-          children: [
-            Card(
-              margin: const EdgeInsets.all(12),
-              child: Padding(
-                padding: const EdgeInsets.all(12),
+    return RefreshIndicator(
+      onRefresh: _forceRefreshPayroll,
+      child: FutureBuilder<PayrollResponse>(
+        future: _payrollFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return _ErrorView(message: snapshot.error.toString());
+          }
+          final payroll = snapshot.data;
+          if (payroll == null) {
+            return const _EmptyView(message: 'Không có dữ liệu thu nhập.');
+          }
+
+          final hourlyRate = _parseHourlyRate();
+          final manualAdjustment = _parseManualAdjustment();
+          final moneySummary = _calculatePayrollMoney(
+            payroll,
+            hourlyRate,
+            manualAdjustment,
+          );
+
+          return ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            children: [
+              _SectionCard(
+                title: 'Bộ lọc kỳ lương',
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Payroll ${payroll.month}/${payroll.year}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        fontSize: 16,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      crossAxisAlignment: WrapCrossAlignment.end,
+                    Row(
                       children: [
-                        SizedBox(
-                          width: 110,
+                        Expanded(
                           child: DropdownButtonFormField<int>(
                             initialValue: _selectedPayrollMonth,
-                            decoration: const InputDecoration(
-                              border: OutlineInputBorder(),
-                              labelText: 'Thang',
-                              isDense: true,
-                            ),
+                            decoration:
+                                const InputDecoration(labelText: 'Tháng'),
                             items: monthOptions
                                 .map(
                                   (month) => DropdownMenuItem<int>(
                                     value: month,
-                                    child: Text('Thang $month'),
+                                    child: Text('Tháng $month'),
                                   ),
                                 )
                                 .toList(),
@@ -1509,15 +1176,11 @@ class _HomeScreenState extends State<HomeScreen> {
                             },
                           ),
                         ),
-                        SizedBox(
-                          width: 120,
+                        const SizedBox(width: 10),
+                        Expanded(
                           child: DropdownButtonFormField<int>(
                             initialValue: _selectedPayrollYear,
-                            decoration: const InputDecoration(
-                              border: OutlineInputBorder(),
-                              labelText: 'Nam',
-                              isDense: true,
-                            ),
+                            decoration: const InputDecoration(labelText: 'Năm'),
                             items: yearOptions
                                 .map(
                                   (year) => DropdownMenuItem<int>(
@@ -1536,221 +1199,628 @@ class _HomeScreenState extends State<HomeScreen> {
                             },
                           ),
                         ),
-                        FilledButton.icon(
-                          onPressed: () => _reloadPayrollOnly(),
-                          icon: const Icon(Icons.filter_alt_outlined),
-                          label: const Text('Loc'),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _hourlyRateController,
+                            keyboardType: TextInputType.number,
+                            decoration: const InputDecoration(
+                              labelText: 'Lương theo giờ (VND)',
+                              hintText: 'Ví dụ: 150000',
+                            ),
+                            onChanged: (_) => setState(() {}),
+                          ),
                         ),
-                        OutlinedButton.icon(
-                          onPressed: () =>
-                              _reloadPayrollOnly(forceNetwork: true),
-                          icon: const Icon(Icons.cloud_sync_outlined),
-                          label: const Text('Cap nhat'),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TextField(
+                            controller: _manualAdjustmentController,
+                            keyboardType: const TextInputType.numberWithOptions(
+                              signed: true,
+                            ),
+                            decoration: const InputDecoration(
+                              labelText: 'Công bù / điều chỉnh',
+                              hintText: 'Ví dụ: 300000 hoặc -200000',
+                            ),
+                            onChanged: (_) => setState(() {}),
+                          ),
                         ),
                       ],
                     ),
                     const SizedBox(height: 10),
-                    TextField(
-                      controller: _hourlyRateController,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        labelText: 'Luong theo gio (VND)',
-                        hintText: 'Vi du: 150000',
-                        isDense: true,
-                      ),
-                      onChanged: (_) {
-                        setState(() {});
-                      },
-                    ),
-                    const SizedBox(height: 10),
-                    TextField(
-                      controller: _manualAdjustmentController,
-                      keyboardType: const TextInputType.numberWithOptions(
-                        signed: true,
-                      ),
-                      decoration: const InputDecoration(
-                        border: OutlineInputBorder(),
-                        labelText: 'Cong bu / dieu chinh thu cong (VND)',
-                        hintText: 'Vi du: 300000 hoac -200000',
-                        isDense: true,
-                      ),
-                      onChanged: (_) {
-                        setState(() {});
-                      },
-                    ),
-                    const SizedBox(height: 10),
-                    Text(
-                      'So buoi da diem danh (thang dang loc): ${moneySummary.actualSlots} buoi (${moneySummary.actualHours.toStringAsFixed(2)}h)',
-                    ),
-                    Text(
-                      'Thu nhap lop hoc (theo role): ${_formatMoney(moneySummary.classIncome)}',
-                    ),
-                    Text(
-                      'Cong office hour: ${payroll.officeHours.length} ca (Fixed: ${moneySummary.fixedOfficeHourCount}, Trial: ${moneySummary.trialOfficeHourCount}, Makeup: ${moneySummary.makeupOfficeHourCount})',
-                    ),
-                    Text(
-                      'Thu nhap office hour: ${_formatMoney(moneySummary.officeHourIncome)}',
-                    ),
-                    Text(
-                      'Cong bu / dieu chinh: ${_formatMoney(moneySummary.manualAdjustment)}',
-                      style: TextStyle(
-                        color: moneySummary.manualAdjustment < 0
-                            ? const Color(0xFFC62828)
-                            : const Color(0xFF2E7D32),
-                      ),
-                    ),
-                    Text(
-                      'Tong thu nhap hien tai: ${_formatMoney(moneySummary.actualIncome)}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF2E7D32),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'So buoi du kien cuoi thang: ${moneySummary.projectedSlots} buoi (${moneySummary.projectedHours.toStringAsFixed(2)}h)',
-                    ),
-                    Text(
-                      'Thu nhap du kien: ${_formatMoney(moneySummary.projectedIncome)}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w700,
-                        color: Color(0xFF1D3FC2),
-                      ),
-                    ),
-                    Text(
-                      'Con lai du kien: ${_formatMoney(moneySummary.remainingIncome < 0 ? 0 : moneySummary.remainingIncome)}',
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Rule tinh luong: LEC/JUDGE/SUPPLY = 100%, TA/ASSISTANT/MAKEUP = 75%, role khac = 0%. Fixed = 80,000 + 30,000 x so hoc vien (toi da 7). Trial = 40,000 cho hoc vien dau + 20,000 moi hoc vien tiep theo. Makeup office hour = 75% luong gio theo thoi luong. Co the cong them cong bu thu cong.',
-                      style: TextStyle(fontSize: 12, color: Colors.black54),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: payroll.summary.byRole
-                          .map(
-                            (role) => Chip(
-                              label: Text(
-                                '${role.role}: ${role.slotCount} slots (${role.totalHours}h)',
-                              ),
-                            ),
-                          )
-                          .toList(),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: FilledButton.icon(
+                            onPressed: () => _reloadPayrollOnly(),
+                            icon: const Icon(Icons.filter_alt_rounded),
+                            label: const Text('Xem dữ liệu'),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            onPressed: _forceRefreshPayroll,
+                            icon: const Icon(Icons.cloud_sync_rounded),
+                            label: const Text('Cập nhật mới'),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),
               ),
-            ),
-            if (payroll.officeHours.isNotEmpty)
-              Card(
-                margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-                child: ExpansionTile(
-                  title: const Text('Office Hour'),
-                  subtitle: Text('${payroll.officeHours.length} ca'),
-                  children: payroll.officeHours
-                      .map(
-                        (officeHour) => ListTile(
-                          dense: true,
-                          title: Text(
-                            '${officeHour.officeHourType ?? officeHour.shortName ?? 'UNKNOWN'} - ${officeHour.status}',
+              const SizedBox(height: 12),
+              _SectionCard(
+                title: 'Tổng hợp thu nhập ${payroll.month}/${payroll.year}',
+                subtitle: 'Đã tính role + office hour + công bù thủ công',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _MiniStat(
+                          icon: Icons.check_circle_rounded,
+                          label:
+                              '${moneySummary.actualSlots} buoi (${moneySummary.actualHours.toStringAsFixed(2)}h)',
+                        ),
+                        _MiniStat(
+                          icon: Icons.auto_graph_rounded,
+                          label:
+                              '${moneySummary.projectedSlots} buoi du kien (${moneySummary.projectedHours.toStringAsFixed(2)}h)',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      'Thu nhập lớp học: ${_formatMoney(moneySummary.classIncome)}',
+                    ),
+                    Text(
+                      'Thu nhập office hour: ${_formatMoney(moneySummary.officeHourIncome)}',
+                    ),
+                    Text(
+                      'Công bù / điều chỉnh: ${_formatMoney(moneySummary.manualAdjustment)}',
+                      style: TextStyle(
+                        color: moneySummary.manualAdjustment < 0
+                            ? Colors.red.shade700
+                            : Colors.green.shade700,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Tổng hiện tại: ${_formatMoney(moneySummary.actualIncome)}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: Colors.green.shade700,
                           ),
+                    ),
+                    Text(
+                      'Tổng dự kiến cuối tháng: ${_formatMoney(moneySummary.projectedIncome)}',
+                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                            color: const Color(0xFF1C4ED8),
+                          ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Office hour: ${payroll.officeHours.length} ca '
+                      '(Fixed ${moneySummary.fixedOfficeHourCount}, '
+                      'Trial ${moneySummary.trialOfficeHourCount}, '
+                      'Makeup ${moneySummary.makeupOfficeHourCount})',
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+              _SectionCard(
+                title: 'Theo role',
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: payroll.summary.byRole
+                      .map(
+                        (role) => Chip(
+                          label: Text(
+                            '${role.role}: ${role.slotCount} slots · ${role.totalHours}h',
+                          ),
+                        ),
+                      )
+                      .toList(),
+                ),
+              ),
+              if (payroll.officeHours.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                _SectionCard(
+                  title: 'Chi tiết office hour',
+                  child: Column(
+                    children: payroll.officeHours.map((officeHour) {
+                      final typeLabel = officeHour.officeHourType ??
+                          officeHour.shortName ??
+                          'UNKNOWN';
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.blueGrey.shade100),
+                        ),
+                        child: ListTile(
+                          title: Text('$typeLabel · ${officeHour.status}'),
                           subtitle: Text(
-                            '${_formatDateTime(officeHour.startTime)} -> ${_formatDateTime(officeHour.endTime)}\n'
-                            'Students: ${officeHour.studentCount} | ${officeHour.durationHours}h',
+                            '${_formatDateTime(officeHour.startTime)} - ${_formatDateTime(officeHour.endTime)}\n'
+                            '${officeHour.studentCount} học viên · ${officeHour.durationHours}h',
                           ),
                           trailing: Text(
                             _formatMoney(
-                              _calculateOfficeHourIncome(officeHour, hourlyRate),
+                              _calculateOfficeHourIncome(
+                                  officeHour, hourlyRate),
                             ),
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w700,
-                              color: Color(0xFF2E7D32),
-                            ),
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(
+                                  color: Colors.green.shade700,
+                                  fontWeight: FontWeight.w800,
+                                ),
                           ),
                           isThreeLine: true,
                         ),
-                      )
-                      .toList(),
-                ),
-              ),
-            ...payroll.classes.map(
-              (cls) => Card(
-                margin: const EdgeInsets.fromLTRB(12, 4, 12, 8),
-                child: ExpansionTile(
-                  title: Text(cls.className),
-                  subtitle: Text(
-                    '${cls.taughtSlotCount} slots | ${cls.totalHours}h | ${cls.roles.join(', ')}',
+                      );
+                    }).toList(),
                   ),
-                  children: cls.slots
-                      .map(
-                        (slot) => ListTile(
-                          dense: true,
-                          title: Text(
-                            'Slot ${slot.slotIndex ?? '-'} - ${slot.attendanceStatus}',
-                          ),
-                          subtitle: Text(
-                            '${_formatDateTime(slot.startTime)} -> ${_formatDateTime(slot.endTime)}\n'
-                            'Role: ${slot.roleShortName ?? slot.roleName ?? 'UNKNOWN'} | ${slot.durationHours}h',
-                          ),
-                          isThreeLine: true,
-                        ),
-                      )
-                      .toList(),
                 ),
-              ),
-            ),
-          ],
-        );
-      },
+              ],
+              if (payroll.classes.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                _SectionCard(
+                  title: 'Chi tiết theo lớp',
+                  child: Column(
+                    children: payroll.classes.map((cls) {
+                      final classIncome =
+                          _calculateClassIncome(cls, hourlyRate);
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.blueGrey.shade100),
+                        ),
+                        child: ExpansionTile(
+                          tilePadding:
+                              const EdgeInsets.symmetric(horizontal: 12),
+                          childrenPadding:
+                              const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                          title: Text(cls.className),
+                          subtitle: Text(
+                            '${cls.taughtSlotCount} slots · ${cls.totalHours}h · ${_formatMoney(classIncome)}',
+                          ),
+                          children: cls.slots
+                              .map(
+                                (slot) => ListTile(
+                                  dense: true,
+                                  contentPadding: EdgeInsets.zero,
+                                  title: Text(
+                                    'Slot ${slot.slotIndex ?? '-'} · ${slot.attendanceStatus}',
+                                  ),
+                                  subtitle: Text(
+                                    '${_formatDateTime(slot.startTime)} - ${_formatDateTime(slot.endTime)}\n'
+                                    'Vai trò ${slot.roleShortName ?? slot.roleName ?? 'UNKNOWN'} · ${slot.durationHours}h',
+                                  ),
+                                  isThreeLine: true,
+                                ),
+                              )
+                              .toList(),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ],
+          );
+        },
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return DefaultTabController(
-      length: 4,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('LMS Smooth Bridge'),
-          actions: [
-            IconButton(
-              onPressed: () => _reloadAll(forceNetwork: true),
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Reload',
-            ),
-            IconButton(
-              onPressed: widget.onSignOut,
-              icon: const Icon(Icons.logout),
-              tooltip: 'Sign out',
-            ),
-          ],
-          bottom: const TabBar(
-            tabs: [
-              Tab(text: 'Classes'),
-              Tab(text: 'Reminders'),
-              Tab(text: 'Attendance'),
-              Tab(text: 'Payroll'),
-            ],
+    final accents = Theme.of(context).extension<AppAccentColors>()!;
+    final titles = ['Tổng quan', 'Lớp học', 'Lịch dạy', 'Thu nhập'];
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(titles[_selectedIndex]),
+        actions: [
+          IconButton(
+            onPressed: _forceRefreshAll,
+            icon: const Icon(Icons.refresh_rounded),
+            tooltip: 'Làm mới',
+          ),
+          IconButton(
+            onPressed: widget.onSignOut,
+            icon: const Icon(Icons.logout_rounded),
+            tooltip: 'Đăng xuất',
+          ),
+        ],
+      ),
+      body: IndexedStack(
+        index: _selectedIndex,
+        children: [
+          _buildOverviewPage(),
+          _buildClassesPage(),
+          _buildSchedulePage(),
+          _buildPayrollPage(),
+        ],
+      ),
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border(
+            top: BorderSide(color: Colors.blueGrey.shade100),
           ),
         ),
-        body: Column(
-          children: [
-            _buildUserHeader(),
-            Expanded(
-              child: TabBarView(
-                children: [
-                  _buildClassesTab(),
-                  _buildRemindersTab(),
-                  _buildAttendanceTab(),
-                  _buildPayrollTab(),
-                ],
-              ),
+        child: NavigationBar(
+          selectedIndex: _selectedIndex,
+          onDestinationSelected: (index) {
+            setState(() {
+              _selectedIndex = index;
+            });
+          },
+          destinations: const [
+            NavigationDestination(
+              icon: Icon(Icons.dashboard_outlined),
+              selectedIcon: Icon(Icons.dashboard_rounded),
+              label: 'Tổng quan',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.class_outlined),
+              selectedIcon: Icon(Icons.class_rounded),
+              label: 'Lớp học',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.event_note_outlined),
+              selectedIcon: Icon(Icons.event_note_rounded),
+              label: 'Lịch dạy',
+            ),
+            NavigationDestination(
+              icon: Icon(Icons.account_balance_wallet_outlined),
+              selectedIcon: Icon(Icons.account_balance_wallet_rounded),
+              label: 'Thu nhập',
             ),
           ],
         ),
+      ),
+      floatingActionButton: _selectedIndex == 3
+          ? FloatingActionButton.extended(
+              onPressed: _forceRefreshPayroll,
+              icon: const Icon(Icons.sync_rounded),
+              label: const Text('Cập nhật lương'),
+              backgroundColor: accents.ink,
+              foregroundColor: Colors.white,
+            )
+          : null,
+    );
+  }
+}
+
+class _SectionCard extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final Widget child;
+
+  const _SectionCard({
+    required this.title,
+    required this.child,
+    this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final accents = Theme.of(context).extension<AppAccentColors>()!;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    color: accents.ink,
+                  ),
+            ),
+            if (subtitle != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                subtitle!,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: accents.mutedInk,
+                    ),
+              ),
+            ],
+            const SizedBox(height: 10),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ScheduleGroup {
+  final String key;
+  final String header;
+  final List<ReminderItem> items;
+
+  _ScheduleGroup({
+    required this.key,
+    required this.header,
+    required this.items,
+  });
+}
+
+class _KpiTile extends StatelessWidget {
+  final String label;
+  final String value;
+  final String hint;
+  final IconData icon;
+  final bool wide;
+  final bool loading;
+
+  const _KpiTile({
+    required this.label,
+    required this.value,
+    required this.hint,
+    required this.icon,
+    this.wide = false,
+  }) : loading = false;
+
+  const _KpiTile.loading({
+    required this.label,
+  })  : value = '...',
+        hint = 'Đang tải',
+        icon = Icons.hourglass_top_rounded,
+        wide = false,
+        loading = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = wide ? 320.0 : 154.0;
+    return Container(
+      width: width,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        color: const Color(0xFFF5F8FF),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, size: 18, color: const Color(0xFF1C4ED8)),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (loading)
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          else
+            Text(
+              value,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          const SizedBox(height: 4),
+          Text(
+            hint,
+            style: Theme.of(context).textTheme.bodySmall,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniStat extends StatelessWidget {
+  final IconData icon;
+  final String label;
+
+  const _MiniStat({
+    required this.icon,
+    required this.label,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(10),
+        color: const Color(0xFFF5F8FF),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 15, color: const Color(0xFF2958C7)),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Pill extends StatelessWidget {
+  final String label;
+  final Color background;
+  final Color foreground;
+  final IconData? icon;
+
+  const _Pill({
+    required this.label,
+    required this.background,
+    required this.foreground,
+    this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 12, color: foreground),
+            const SizedBox(width: 4),
+          ],
+          Text(
+            label,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: foreground,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ReminderBadge {
+  final String label;
+  final Color background;
+  final Color foreground;
+  final IconData icon;
+
+  const _ReminderBadge({
+    required this.label,
+    required this.background,
+    required this.foreground,
+    required this.icon,
+  });
+
+  factory _ReminderBadge.fromReminder(ReminderItem reminder) {
+    if (reminder.isWindowOpen) {
+      return const _ReminderBadge(
+        label: 'Đang mở',
+        background: Color(0xFFDDF7E8),
+        foreground: Color(0xFF0F9D58),
+        icon: Icons.check_circle_rounded,
+      );
+    }
+
+    if (reminder.minutesUntilWindowOpen > 0) {
+      return _ReminderBadge(
+        label: 'Còn ${reminder.minutesUntilWindowOpen} phút',
+        background: const Color(0xFFE3EEFF),
+        foreground: const Color(0xFF1C4ED8),
+        icon: Icons.schedule_rounded,
+      );
+    }
+
+    return const _ReminderBadge(
+      label: 'Sắp đóng',
+      background: Color(0xFFFFF1DD),
+      foreground: Color(0xFFD97706),
+      icon: Icons.warning_amber_rounded,
+    );
+  }
+}
+
+class _InlineLoading extends StatelessWidget {
+  const _InlineLoading();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 16),
+      child: Center(
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+    );
+  }
+}
+
+class _ErrorLabel extends StatelessWidget {
+  final String message;
+
+  const _ErrorLabel({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.red.shade50,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.red.shade100),
+      ),
+      child: Text(
+        message,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Colors.red.shade700,
+              fontWeight: FontWeight.w700,
+            ),
+      ),
+    );
+  }
+}
+
+class _EmptyLabel extends StatelessWidget {
+  final String message;
+
+  const _EmptyLabel({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F8FB),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Text(
+        message,
+        style: Theme.of(context).textTheme.bodySmall,
       ),
     );
   }
@@ -1781,76 +1851,31 @@ class _EmptyView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final accents = Theme.of(context).extension<AppAccentColors>()!;
     return Center(
-      child: Text(
-        message,
-        style: const TextStyle(color: Colors.black54),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.inbox_rounded,
+              size: 40,
+              color: accents.mutedInk.withValues(alpha: 0.8),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              message,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: accents.mutedInk,
+                  ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }
-}
-
-enum _AttendanceStatus {
-  attended,
-  absent,
-}
-
-extension _AttendanceStatusLabel on _AttendanceStatus {
-  String get displayLabel {
-    switch (this) {
-      case _AttendanceStatus.attended:
-        return 'Co mat';
-      case _AttendanceStatus.absent:
-        return 'Vang';
-    }
-  }
-
-  IconData get icon {
-    switch (this) {
-      case _AttendanceStatus.attended:
-        return Icons.check;
-      case _AttendanceStatus.absent:
-        return Icons.close;
-    }
-  }
-
-  Color get color {
-    switch (this) {
-      case _AttendanceStatus.attended:
-        return const Color(0xFF2E7D32);
-      case _AttendanceStatus.absent:
-        return const Color(0xFFC62828);
-    }
-  }
-
-  String get code {
-    switch (this) {
-      case _AttendanceStatus.attended:
-        return 'ATTENDED';
-      case _AttendanceStatus.absent:
-        return 'ABSENT';
-    }
-  }
-}
-
-class _AttendanceSlotOption {
-  final String slotId;
-  final int? slotIndex;
-  final String label;
-  final bool isWindowOpen;
-  final String attendanceOpenAt;
-  final String attendanceCloseAt;
-  final bool isPlaceholder;
-
-  const _AttendanceSlotOption({
-    required this.slotId,
-    required this.slotIndex,
-    required this.label,
-    required this.isWindowOpen,
-    required this.attendanceOpenAt,
-    required this.attendanceCloseAt,
-    this.isPlaceholder = false,
-  });
 }
 
 class _PayrollMoneySummary {

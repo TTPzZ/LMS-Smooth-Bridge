@@ -36,12 +36,14 @@ class AuthSessionManager {
   Future<AuthSession> signIn({
     required String apiKey,
     required String email,
+    required String username,
     required String password,
     required String backendBaseUrl,
   }) async {
     final session = await _authService.signInWithPassword(
       apiKey: apiKey,
       email: email,
+      username: username,
       password: password,
       backendBaseUrl: backendBaseUrl,
     );

@@ -16,6 +16,6 @@ void main() {
     await tester.pumpWidget(const SmoothBridgeApp());
     await tester.pumpAndSettle();
 
-    expect(find.text('LMS Smooth Bridge Login'), findsOneWidget);
+    expect(find.text('LMS Smooth Bridge'), findsOneWidget);
   });
 }

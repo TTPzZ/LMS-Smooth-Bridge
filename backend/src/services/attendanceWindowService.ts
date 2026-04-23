@@ -1,5 +1,10 @@
 import { env } from '../config/env';
-import { LmsClassRecord, LmsSlotRecord } from '../types/lms';
+import { LmsClassRecord, LmsSlotRecord, LmsTeacherAssignment } from '../types/lms';
+
+type ReminderPrincipal = {
+    teacherId?: string | null;
+    username?: string | null;
+};
 
 export type SlotAttendanceWindow = {
     classId: string;
@@ -17,6 +22,8 @@ export type SlotAttendanceWindow = {
     minutesUntilWindowOpen: number;
     minutesUntilWindowClose: number;
     totalStudentsInSlot: number;
+    roleName: string | null;
+    roleShortName: string | null;
     attendanceOpenAtMs: number;
     attendanceCloseAtMs: number;
 };
@@ -41,6 +48,64 @@ export function normalizeClassStatus(status: string | undefined): string | undef
     }
 
     return status.trim().toUpperCase();
+}
+
+function normalizeIdentity(value: string | null | undefined): string {
+    return String(value ?? '').trim().toLowerCase();
+}
+
+function deriveUsernameFromEmail(value: string | null | undefined): string {
+    const raw = normalizeIdentity(value);
+    if (!raw) {
+        return '';
+    }
+    const at = raw.indexOf('@');
+    if (at <= 0) {
+        return raw;
+    }
+    return raw.substring(0, at);
+}
+
+function resolveRoleForPrincipal(
+    cls: LmsClassRecord,
+    slot: LmsSlotRecord,
+    principal?: ReminderPrincipal | null
+): { roleName: string | null; roleShortName: string | null } {
+    const assignments = (slot.teachers || []).length > 0 ? slot.teachers || [] : cls.teachers || [];
+    if (assignments.length === 0) {
+        return {
+            roleName: null,
+            roleShortName: null
+        };
+    }
+
+    const principalTeacherId = normalizeIdentity(principal?.teacherId);
+    const principalUsername = normalizeIdentity(principal?.username);
+    const principalDerivedUsername = deriveUsernameFromEmail(principal?.username);
+
+    const isMatch = (assignment: LmsTeacherAssignment): boolean => {
+        const teacherId = normalizeIdentity(assignment.teacher?.id);
+        const teacherUsername = normalizeIdentity(assignment.teacher?.username);
+        if (principalTeacherId && teacherId && principalTeacherId === teacherId) {
+            return true;
+        }
+        if (principalUsername && teacherUsername && principalUsername === teacherUsername) {
+            return true;
+        }
+        if (principalDerivedUsername && teacherUsername && principalDerivedUsername === teacherUsername) {
+            return true;
+        }
+        return false;
+    };
+
+    const matched = assignments.find(isMatch);
+    const fallback = assignments.find((item) => item.isActive) || assignments[0];
+    const picked = matched || fallback;
+
+    return {
+        roleName: picked.role?.name || null,
+        roleShortName: picked.role?.shortName || null
+    };
 }
 
 function hasNotEnded(endDate: string | undefined, now: Date): boolean {
@@ -68,7 +133,8 @@ export function isRunningClass(cls: LmsClassRecord, now: Date): boolean {
 function buildSlotAttendanceWindow(
     cls: LmsClassRecord,
     slot: LmsSlotRecord,
-    nowMs: number
+    nowMs: number,
+    principal?: ReminderPrincipal | null
 ): SlotAttendanceWindow | null {
     if (!slot._id || !slot.startTime || !slot.endTime) {
         return null;
@@ -84,6 +150,7 @@ function buildSlotAttendanceWindow(
     const attendanceCloseAtMs = endMs + env.ATTENDANCE_CLOSE_MINUTES_AFTER * 60_000;
     const classStatus = normalizeClassStatus(cls.status) ?? null;
     const isWindowOpen = nowMs >= attendanceOpenAtMs && nowMs <= attendanceCloseAtMs;
+    const role = resolveRoleForPrincipal(cls, slot, principal);
 
     return {
         classId: cls.id,
@@ -105,14 +172,20 @@ function buildSlotAttendanceWindow(
             ? Math.ceil((attendanceCloseAtMs - nowMs) / 60_000)
             : 0,
         totalStudentsInSlot: (slot.studentAttendance || []).length,
+        roleName: role.roleName,
+        roleShortName: role.roleShortName,
         attendanceOpenAtMs,
         attendanceCloseAtMs
     };
 }
 
-export function getClassAttendanceWindows(cls: LmsClassRecord, nowMs: number): SlotAttendanceWindow[] {
+export function getClassAttendanceWindows(
+    cls: LmsClassRecord,
+    nowMs: number,
+    principal?: ReminderPrincipal | null
+): SlotAttendanceWindow[] {
     const windows = (cls.slots || [])
-        .map((slot) => buildSlotAttendanceWindow(cls, slot, nowMs))
+        .map((slot) => buildSlotAttendanceWindow(cls, slot, nowMs, principal))
         .filter((item): item is SlotAttendanceWindow => item !== null)
         .sort((a, b) => a.attendanceOpenAtMs - b.attendanceOpenAtMs);
 
@@ -135,6 +208,8 @@ export function toPublicAttendanceWindow(window: SlotAttendanceWindow) {
         isWindowOpen: window.isWindowOpen,
         minutesUntilWindowOpen: window.minutesUntilWindowOpen,
         minutesUntilWindowClose: window.minutesUntilWindowClose,
-        totalStudentsInSlot: window.totalStudentsInSlot
+        totalStudentsInSlot: window.totalStudentsInSlot,
+        roleName: window.roleName,
+        roleShortName: window.roleShortName
     };
 }

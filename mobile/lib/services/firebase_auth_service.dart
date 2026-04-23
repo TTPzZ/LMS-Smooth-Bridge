@@ -33,11 +33,13 @@ class FirebaseAuthService {
   Future<AuthSession> signInWithPassword({
     required String apiKey,
     required String email,
+    required String username,
     required String password,
     required String backendBaseUrl,
   }) async {
     final normalizedApiKey = apiKey.trim();
     final normalizedEmail = email.trim();
+    final normalizedUsername = username.trim();
     final normalizedBaseUrl = backendBaseUrl.trim();
 
     if (normalizedApiKey.isEmpty) {
@@ -45,6 +47,9 @@ class FirebaseAuthService {
     }
     if (normalizedEmail.isEmpty) {
       throw AuthException('Email is required.');
+    }
+    if (normalizedUsername.isEmpty) {
+      throw AuthException('Username is required.');
     }
     if (password.isEmpty) {
       throw AuthException('Password is required.');
@@ -84,6 +89,7 @@ class FirebaseAuthService {
     return AuthSession(
       apiKey: normalizedApiKey,
       email: normalizedEmail,
+      username: normalizedUsername,
       backendBaseUrl: normalizedBaseUrl,
       idToken: idToken,
       refreshToken: refreshToken,

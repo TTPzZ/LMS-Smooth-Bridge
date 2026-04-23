@@ -1,6 +1,7 @@
 class AuthSession {
   final String apiKey;
   final String email;
+  final String username;
   final String backendBaseUrl;
   final String idToken;
   final String refreshToken;
@@ -9,6 +10,7 @@ class AuthSession {
   const AuthSession({
     required this.apiKey,
     required this.email,
+    required this.username,
     required this.backendBaseUrl,
     required this.idToken,
     required this.refreshToken,
@@ -25,6 +27,7 @@ class AuthSession {
   AuthSession copyWith({
     String? apiKey,
     String? email,
+    String? username,
     String? backendBaseUrl,
     String? idToken,
     String? refreshToken,
@@ -33,6 +36,7 @@ class AuthSession {
     return AuthSession(
       apiKey: apiKey ?? this.apiKey,
       email: email ?? this.email,
+      username: username ?? this.username,
       backendBaseUrl: backendBaseUrl ?? this.backendBaseUrl,
       idToken: idToken ?? this.idToken,
       refreshToken: refreshToken ?? this.refreshToken,
@@ -44,6 +48,7 @@ class AuthSession {
     return {
       'apiKey': apiKey,
       'email': email,
+      'username': username,
       'backendBaseUrl': backendBaseUrl,
       'idToken': idToken,
       'refreshToken': refreshToken,
@@ -52,9 +57,12 @@ class AuthSession {
   }
 
   factory AuthSession.fromJson(Map<String, dynamic> json) {
+    final email = (json['email'] ?? '').toString();
+    final username = (json['username'] ?? '').toString();
     return AuthSession(
       apiKey: (json['apiKey'] ?? '').toString(),
-      email: (json['email'] ?? '').toString(),
+      email: email,
+      username: username.isNotEmpty ? username : _usernameFromEmail(email),
       backendBaseUrl: (json['backendBaseUrl'] ?? '').toString(),
       idToken: (json['idToken'] ?? '').toString(),
       refreshToken: (json['refreshToken'] ?? '').toString(),
@@ -71,4 +79,16 @@ int _asInt(dynamic value) {
     return value.toInt();
   }
   return int.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+String _usernameFromEmail(String email) {
+  final normalized = email.trim();
+  if (normalized.isEmpty) {
+    return '';
+  }
+  final atIndex = normalized.indexOf('@');
+  if (atIndex <= 0) {
+    return normalized;
+  }
+  return normalized.substring(0, atIndex);
 }
