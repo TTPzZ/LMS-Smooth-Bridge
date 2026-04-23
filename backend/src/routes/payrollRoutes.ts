@@ -1,11 +1,22 @@
 import { Router, Request, Response } from 'express';
 import { PayrollService } from '../services/payrollService';
+import { parseBearerToken } from '../utils/requestParsers';
 
 export function createPayrollRouter(payrollService: PayrollService): Router {
     const router = Router();
 
     router.get('/payroll/monthly', async (req: Request, res: Response) => {
         try {
+            const idTokenFromHeader = parseBearerToken(req.headers.authorization);
+            if (req.headers.authorization && !idTokenFromHeader) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Authorization header khong hop le',
+                    detail: 'Expected format: Bearer <id_token>'
+                });
+                return;
+            }
+
             const data = await payrollService.getMonthlyPayroll({
                 month: req.query.month,
                 year: req.query.year,
@@ -15,7 +26,7 @@ export function createPayrollRouter(payrollService: PayrollService): Router {
                 itemsPerPage: req.query.itemsPerPage,
                 maxPages: req.query.maxPages,
                 countedStatuses: req.query.countedStatuses
-            });
+            }, idTokenFromHeader ?? undefined);
 
             res.json({
                 success: true,
@@ -23,7 +34,11 @@ export function createPayrollRouter(payrollService: PayrollService): Router {
             });
         } catch (error: any) {
             const detail = error?.response?.data || error?.message || 'Payroll query failed';
-            const statusCode = typeof error?.response?.status === 'number' ? error.response.status : 400;
+            const statusCode = typeof error?.statusCode === 'number'
+                ? error.statusCode
+                : typeof error?.response?.status === 'number'
+                    ? error.response.status
+                    : 400;
             res.status(statusCode).json({
                 success: false,
                 error: 'Khong lay duoc du lieu payroll',

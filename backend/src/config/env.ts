@@ -52,6 +52,7 @@ export const env = {
     PUSH_NOTIFIER_INTERVAL_SECONDS: parseIntegerEnv(process.env.PUSH_NOTIFIER_INTERVAL_SECONDS, 60),
     PUSH_LOOKAHEAD_MINUTES: parseIntegerEnv(process.env.PUSH_LOOKAHEAD_MINUTES, 15),
     PUSH_HISTORY_TTL_HOURS: parseIntegerEnv(process.env.PUSH_HISTORY_TTL_HOURS, 72),
+    CRON_SECRET: process.env.CRON_SECRET?.trim() ?? '',
 
     FCM_PROJECT_ID: process.env.FCM_PROJECT_ID?.trim() ?? '',
     FCM_CLIENT_EMAIL: process.env.FCM_CLIENT_EMAIL?.trim() ?? '',

@@ -28,3 +28,19 @@ export function sanitizePositiveInt(value: unknown, fallback: number): number {
     const parsed = parseIntegerQuery(value, fallback);
     return parsed > 0 ? parsed : fallback;
 }
+
+export function parseBearerToken(value: unknown): string | null {
+    const rawHeader = Array.isArray(value) ? value[0] : value;
+    const authHeader = String(rawHeader ?? '').trim();
+    if (!authHeader) {
+        return null;
+    }
+
+    const matcher = /^Bearer\s+(.+)$/i.exec(authHeader);
+    if (!matcher) {
+        return null;
+    }
+
+    const token = matcher[1]?.trim();
+    return token ? token : null;
+}
