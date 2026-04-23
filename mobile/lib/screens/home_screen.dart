@@ -353,6 +353,17 @@ class _HomeScreenState extends State<HomeScreen> {
     return false;
   }
 
+  bool _isTrialOfficeHourType(String rawType) {
+    final normalized = _normalizeOfficeHourType(rawType);
+    if (normalized.isEmpty) {
+      return false;
+    }
+    if (normalized == 'TRIAL' || normalized.contains('TRIAL')) {
+      return true;
+    }
+    return false;
+  }
+
   bool _isMakeupOfficeHourType(String rawType) {
     final normalized = _normalizeOfficeHourType(rawType);
     if (normalized.isEmpty) {
@@ -376,6 +387,14 @@ class _HomeScreenState extends State<HomeScreen> {
           ? 0
           : (officeHour.studentCount > 7 ? 7 : officeHour.studentCount);
       return (80000 + (30000 * cappedStudents)).toDouble();
+    }
+
+    if (_isTrialOfficeHourType(rawType)) {
+      final studentCount = officeHour.studentCount < 0 ? 0 : officeHour.studentCount;
+      if (studentCount <= 0) {
+        return 0;
+      }
+      return (40000 + ((studentCount - 1) * 20000)).toDouble();
     }
 
     if (_isMakeupOfficeHourType(rawType)) {
@@ -411,12 +430,16 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     var fixedOfficeHourCount = 0;
+    var trialOfficeHourCount = 0;
     var makeupOfficeHourCount = 0;
     var officeHourIncome = 0.0;
     for (final officeHour in payroll.officeHours) {
       final rawType = officeHour.officeHourType ?? officeHour.shortName ?? '';
       if (_isFixedOfficeHourType(rawType)) {
         fixedOfficeHourCount += 1;
+      }
+      if (_isTrialOfficeHourType(rawType)) {
+        trialOfficeHourCount += 1;
       }
       if (_isMakeupOfficeHourType(rawType)) {
         makeupOfficeHourCount += 1;
@@ -454,6 +477,7 @@ class _HomeScreenState extends State<HomeScreen> {
       classIncome: classIncome,
       officeHourIncome: officeHourIncome,
       fixedOfficeHourCount: fixedOfficeHourCount,
+      trialOfficeHourCount: trialOfficeHourCount,
       makeupOfficeHourCount: makeupOfficeHourCount,
       manualAdjustment: manualAdjustment,
       actualIncome: actualIncome,
@@ -1563,7 +1587,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       'Thu nhap lop hoc (theo role): ${_formatMoney(moneySummary.classIncome)}',
                     ),
                     Text(
-                      'Cong office hour: ${payroll.officeHours.length} ca (Fixed: ${moneySummary.fixedOfficeHourCount}, Makeup: ${moneySummary.makeupOfficeHourCount})',
+                      'Cong office hour: ${payroll.officeHours.length} ca (Fixed: ${moneySummary.fixedOfficeHourCount}, Trial: ${moneySummary.trialOfficeHourCount}, Makeup: ${moneySummary.makeupOfficeHourCount})',
                     ),
                     Text(
                       'Thu nhap office hour: ${_formatMoney(moneySummary.officeHourIncome)}',
@@ -1599,7 +1623,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Rule tinh luong: LEC/JUDGE/SUPPLY = 100%, TA/ASSISTANT/MAKEUP = 75%, role khac = 0%. Fixed = 80,000 + 30,000 x so hoc vien (toi da 7). Makeup office hour = 75% luong gio theo thoi luong. Co the cong them cong bu thu cong.',
+                      'Rule tinh luong: LEC/JUDGE/SUPPLY = 100%, TA/ASSISTANT/MAKEUP = 75%, role khac = 0%. Fixed = 80,000 + 30,000 x so hoc vien (toi da 7). Trial = 40,000 cho hoc vien dau + 20,000 moi hoc vien tiep theo. Makeup office hour = 75% luong gio theo thoi luong. Co the cong them cong bu thu cong.',
                       style: TextStyle(fontSize: 12, color: Colors.black54),
                     ),
                     const SizedBox(height: 8),
@@ -1837,6 +1861,7 @@ class _PayrollMoneySummary {
   final double classIncome;
   final double officeHourIncome;
   final int fixedOfficeHourCount;
+  final int trialOfficeHourCount;
   final int makeupOfficeHourCount;
   final double manualAdjustment;
   final double actualIncome;
@@ -1851,6 +1876,7 @@ class _PayrollMoneySummary {
     required this.classIncome,
     required this.officeHourIncome,
     required this.fixedOfficeHourCount,
+    required this.trialOfficeHourCount,
     required this.makeupOfficeHourCount,
     required this.manualAdjustment,
     required this.actualIncome,
