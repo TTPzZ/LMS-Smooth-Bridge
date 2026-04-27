@@ -70,6 +70,8 @@ class ClassSummary {
   final List<String> coTeachers;
   final int totalSlots;
   final AttendanceWindow? nextAttendanceWindow;
+  final ClassCommentContext? nextCommentContext;
+  final ClassCommentContext? previousCommentContext;
 
   ClassSummary({
     required this.classId,
@@ -83,10 +85,14 @@ class ClassSummary {
     required this.coTeachers,
     required this.totalSlots,
     required this.nextAttendanceWindow,
+    required this.nextCommentContext,
+    required this.previousCommentContext,
   });
 
   factory ClassSummary.fromJson(Map<String, dynamic> json) {
     final next = json['nextAttendanceWindow'];
+    final nextComment = json['nextCommentContext'];
+    final previousComment = json['previousCommentContext'];
     return ClassSummary(
       classId: (json['classId'] ?? '').toString(),
       className: (json['className'] ?? '').toString(),
@@ -100,6 +106,12 @@ class ClassSummary {
       totalSlots: _asInt(json['totalSlots']),
       nextAttendanceWindow: (next is Map<String, dynamic>)
           ? AttendanceWindow.fromJson(next)
+          : null,
+      nextCommentContext: (nextComment is Map<String, dynamic>)
+          ? ClassCommentContext.fromJson(nextComment)
+          : null,
+      previousCommentContext: (previousComment is Map<String, dynamic>)
+          ? ClassCommentContext.fromJson(previousComment)
           : null,
     );
   }
@@ -117,6 +129,49 @@ class ClassSummary {
       'coTeachers': coTeachers,
       'totalSlots': totalSlots,
       'nextAttendanceWindow': nextAttendanceWindow?.toJson(),
+      'nextCommentContext': nextCommentContext?.toJson(),
+      'previousCommentContext': previousCommentContext?.toJson(),
+    };
+  }
+}
+
+class ClassCommentContext {
+  final String? slotId;
+  final int? sessionNumber;
+  final String? slotStartTime;
+  final String? slotEndTime;
+  final int missingCommentStudentCount;
+  final List<String> missingCommentStudents;
+
+  ClassCommentContext({
+    required this.slotId,
+    required this.sessionNumber,
+    required this.slotStartTime,
+    required this.slotEndTime,
+    required this.missingCommentStudentCount,
+    required this.missingCommentStudents,
+  });
+
+  factory ClassCommentContext.fromJson(Map<String, dynamic> json) {
+    return ClassCommentContext(
+      slotId: json['slotId']?.toString(),
+      sessionNumber:
+          (json['sessionNumber'] is int) ? json['sessionNumber'] as int : null,
+      slotStartTime: json['slotStartTime']?.toString(),
+      slotEndTime: json['slotEndTime']?.toString(),
+      missingCommentStudentCount: _asInt(json['missingCommentStudentCount']),
+      missingCommentStudents: _asStringList(json['missingCommentStudents']),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'slotId': slotId,
+      'sessionNumber': sessionNumber,
+      'slotStartTime': slotStartTime,
+      'slotEndTime': slotEndTime,
+      'missingCommentStudentCount': missingCommentStudentCount,
+      'missingCommentStudents': missingCommentStudents,
     };
   }
 }

@@ -83,11 +83,17 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<String, _ClassCardSection?> _classSectionByClassId = {};
   final Map<String, List<_StudentCommentDraft>> _studentCommentDraftByClassId =
       {};
+  final Map<String, List<_StudentCommentDraft>>
+      _previousStudentCommentDraftByClassId = {};
   final Map<String, String> _studentCommentSlotByClassId = {};
+  final Map<String, String> _previousStudentCommentSlotByClassId = {};
   final Map<String, bool> _studentCommentLoadingByClassId = {};
+  final Map<String, bool> _previousStudentCommentLoadingByClassId = {};
   final Map<String, bool> _studentCommentSavingByClassId = {};
   final Map<String, String?> _studentCommentSavingDraftKeyByClassId = {};
   final Map<String, String?> _studentCommentErrorByClassId = {};
+  final Map<String, String?> _previousStudentCommentErrorByClassId = {};
+  final Set<String> _previousCommentWarningShown = {};
 
   @override
   void initState() {
@@ -734,6 +740,107 @@ class _HomeScreenState extends State<HomeScreen> {
         });
       }
     }
+  }
+
+  Future<void> _loadPreviousStudentCommentsForClass({
+    required String classId,
+    required String slotId,
+    bool force = false,
+  }) async {
+    final normalizedSlotId = slotId.trim();
+    if (normalizedSlotId.isEmpty) {
+      setState(() {
+        _previousStudentCommentDraftByClassId[classId] = const [];
+        _previousStudentCommentSlotByClassId.remove(classId);
+        _previousStudentCommentErrorByClassId[classId] = null;
+      });
+      return;
+    }
+
+    final alreadyLoaded =
+        _previousStudentCommentSlotByClassId[classId] == normalizedSlotId &&
+            _previousStudentCommentDraftByClassId.containsKey(classId) &&
+            _previousStudentCommentErrorByClassId[classId] == null;
+    if (!force && alreadyLoaded) {
+      return;
+    }
+
+    setState(() {
+      _previousStudentCommentLoadingByClassId[classId] = true;
+      _previousStudentCommentErrorByClassId[classId] = null;
+    });
+
+    try {
+      final comments = await _api.getSlotAttendanceComments(
+        classId: classId,
+        slotId: normalizedSlotId,
+      );
+      final drafts = comments
+          .map(
+            (item) => _StudentCommentDraft(
+              key: item.key,
+              name: item.name,
+              studentId: item.studentId,
+              comment: item.comment,
+            ),
+          )
+          .toList();
+      setState(() {
+        _previousStudentCommentDraftByClassId[classId] = drafts;
+        _previousStudentCommentSlotByClassId[classId] = normalizedSlotId;
+        _previousStudentCommentErrorByClassId[classId] = null;
+      });
+
+      final missingCount =
+          drafts.where((item) => item.comment.trim().isEmpty).length;
+      final warningKey = '$classId::$normalizedSlotId';
+      if (missingCount > 0 &&
+          mounted &&
+          !_previousCommentWarningShown.contains(warningKey)) {
+        _previousCommentWarningShown.add(warningKey);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Buoi truoc con $missingCount hoc vien chua co nhan xet.',
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      setState(() {
+        _previousStudentCommentDraftByClassId[classId] =
+            _previousStudentCommentDraftByClassId[classId] ??
+                const <_StudentCommentDraft>[];
+        _previousStudentCommentErrorByClassId[classId] =
+            'Khong tai duoc nhan xet buoi truoc: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _previousStudentCommentLoadingByClassId[classId] = false;
+        });
+      }
+    }
+  }
+
+  String _buildMissingPreviousCommentMessage(
+    List<_StudentCommentDraft> drafts,
+  ) {
+    final missingNames = drafts
+        .where((item) => item.comment.trim().isEmpty)
+        .map((item) => item.name.trim())
+        .where((name) => name.isNotEmpty)
+        .toList();
+    if (missingNames.isEmpty) {
+      return '';
+    }
+
+    if (missingNames.length <= 3) {
+      return 'Buoi truoc con ${missingNames.length} hoc vien chua co nhan xet: ${missingNames.join(', ')}.';
+    }
+
+    final head = missingNames.take(3).join(', ');
+    return 'Buoi truoc con ${missingNames.length} hoc vien chua co nhan xet: $head va ${missingNames.length - 3} hoc vien khac.';
   }
 
   void _updateStudentCommentDraft({
@@ -1530,13 +1637,28 @@ class _HomeScreenState extends State<HomeScreen> {
               final commentDrafts =
                   _studentCommentDraftByClassId[cls.classId] ??
                       const <_StudentCommentDraft>[];
+              final previousCommentDrafts =
+                  _previousStudentCommentDraftByClassId[cls.classId] ??
+                      const <_StudentCommentDraft>[];
               final isLoadingComments =
                   _studentCommentLoadingByClassId[cls.classId] == true;
+              final isLoadingPreviousComments =
+                  _previousStudentCommentLoadingByClassId[cls.classId] == true;
               final isSavingComments =
                   _studentCommentSavingByClassId[cls.classId] == true;
               final savingDraftKey =
                   _studentCommentSavingDraftKeyByClassId[cls.classId];
               final commentsError = _studentCommentErrorByClassId[cls.classId];
+              final previousCommentsError =
+                  _previousStudentCommentErrorByClassId[cls.classId];
+              final previousSlotId = cls.previousCommentContext?.slotId ?? '';
+              final previousMissingMessage =
+                  _buildMissingPreviousCommentMessage(previousCommentDrafts);
+              final previousCommentHeader = cls
+                          .previousCommentContext?.sessionNumber !=
+                      null
+                  ? 'Nhan xet buoi ${cls.previousCommentContext!.sessionNumber}'
+                  : 'Nhan xet buoi truoc';
               final classStartLabel = _formatDateTime(cls.classStartDate);
               final classEndLabel = _formatDateTime(cls.classEndDate);
               final isAttendanceWindowOpen = nextReminder?.isWindowOpen ??
@@ -1652,10 +1774,17 @@ class _HomeScreenState extends State<HomeScreen> {
                                     section: _ClassCardSection.note,
                                   );
                                   if (!isActive) {
+                                    final previousSlotId =
+                                        cls.previousCommentContext?.slotId ??
+                                            '';
                                     _loadStudentCommentsForClass(
                                       classId: cls.classId,
                                       slotId: saveSlotId,
                                       studentNames: studentNames,
+                                    );
+                                    _loadPreviousStudentCommentsForClass(
+                                      classId: cls.classId,
+                                      slotId: previousSlotId,
                                     );
                                   }
                                 },
@@ -1895,6 +2024,117 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
+                              Text(
+                                previousCommentHeader,
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 8),
+                              if (previousSlotId.isEmpty)
+                                const _EmptyLabel(
+                                  message:
+                                      'Chua co buoi hoc truoc de doi chieu nhan xet.',
+                                )
+                              else if (isLoadingPreviousComments)
+                                const _InlineLoading()
+                              else if (previousCommentsError != null)
+                                _ErrorLabel(message: previousCommentsError)
+                              else if (previousCommentDrafts.isEmpty)
+                                const _EmptyLabel(
+                                  message:
+                                      'Khong co du lieu nhan xet cua buoi hoc truoc.',
+                                )
+                              else ...[
+                                if (previousMissingMessage.isNotEmpty) ...[
+                                  Container(
+                                    width: double.infinity,
+                                    margin: const EdgeInsets.only(bottom: 10),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFF4E5),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                          color: const Color(0xFFF5D0A9)),
+                                    ),
+                                    child: Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Padding(
+                                          padding: EdgeInsets.only(top: 1),
+                                          child: Icon(
+                                            Icons.warning_amber_rounded,
+                                            color: Color(0xFFB45309),
+                                            size: 18,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            previousMissingMessage,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  color:
+                                                      const Color(0xFF92400E),
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ],
+                                ...previousCommentDrafts.map((item) {
+                                  final commentText = item.comment.trim();
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF1F5F9),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          item.name,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          commentText.isEmpty
+                                              ? 'Chua co nhan xet'
+                                              : commentText,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: commentText.isEmpty
+                                                    ? Colors.orange.shade800
+                                                    : Colors.blueGrey.shade800,
+                                                fontStyle: commentText.isEmpty
+                                                    ? FontStyle.italic
+                                                    : FontStyle.normal,
+                                                fontWeight: commentText.isEmpty
+                                                    ? FontWeight.w700
+                                                    : FontWeight.w500,
+                                              ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ],
+                              const SizedBox(height: 10),
+                              const Divider(height: 1),
+                              const SizedBox(height: 10),
                               Text(
                                 'Nhan xet tung hoc vien',
                                 style: Theme.of(context).textTheme.titleSmall,

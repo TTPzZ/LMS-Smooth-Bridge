@@ -15,6 +15,7 @@ import {
     LmsClassStudent,
     LmsCommentArea,
     LmsCourseProcess,
+    LmsSlotRecord,
     LmsSlotAttendanceCommand,
     LmsSlotAttendanceStatus,
     LmsStudentAttendanceRecord,
@@ -512,6 +513,24 @@ function extractNarrativeCommentFromHtml(content: string): string {
     return normalizeCommentText(plain);
 }
 
+function readAttendanceCommentText(attendance?: LmsStudentAttendanceRecord | null): string {
+    if (!attendance) {
+        return '';
+    }
+
+    const richContent = String(
+        (attendance.commentByAreas || []).find((item) => String(item?.content ?? '').trim())?.content ?? ''
+    ).trim();
+    const rawSource = richContent
+        || String(attendance.comment ?? '').trim()
+        || String(attendance.note ?? '').trim();
+    if (!rawSource) {
+        return '';
+    }
+
+    return extractNarrativeCommentFromHtml(rawSource);
+}
+
 function pickCommentAreaIdFromCourseProcess(
     courseProcess: LmsCourseProcess | undefined,
     sessionNumber?: number
@@ -832,6 +851,106 @@ function findSingleMatchByKeys<T>(
     };
 }
 
+function buildPublicCommentContext(
+    cls: LmsClassRecord,
+    slot: LmsSlotRecord | null | undefined
+): {
+    classSiteId: string | null;
+    courseProcessId: string | null;
+    sessionNumber: number | null;
+    commentAreaId: string | null;
+    slotId: string | null;
+    slotStartTime: string | null;
+    slotEndTime: string | null;
+    missingCommentStudentCount: number;
+    missingCommentStudents: string[];
+    students: Array<{
+        key: string;
+        name: string;
+        studentId: string | null;
+        studentAttendanceId: string | null;
+        classSiteId: string | null;
+        courseProcessId: string | null;
+        sessionNumber: number | null;
+        commentAreaId: string | null;
+        hasComment: boolean;
+    }>;
+} | null {
+    if (!slot?._id) {
+        return null;
+    }
+
+    const activeClassStudents = (cls.students || []).filter((item) => item.activeInClass !== false);
+    const classSiteId = String(
+        (cls.classSites || []).find((site) => String(site?._id ?? '').trim())?._id ?? ''
+    ).trim() || null;
+    const courseProcessId = String(cls.courseProcessId ?? cls.courseProcess?.id ?? '').trim() || null;
+    const sessionNumber = typeof slot.index === 'number' ? slot.index : null;
+    const commentAreaId = pickCommentAreaIdFromCourseProcess(
+        cls.courseProcess,
+        sessionNumber ?? undefined
+    ) ?? null;
+    const slotStudentAttendance = slot.studentAttendance || [];
+    const studentAttendanceIndex = createLookupIndex(
+        slotStudentAttendance,
+        (record) => collectStudentRecordKeys(record.student)
+    );
+
+    const students = activeClassStudents.flatMap((classStudent) => {
+        const student = classStudent.student;
+        const name = studentDisplayName(student);
+        if (!name) {
+            return [];
+        }
+
+        const attendanceMatch = findSingleMatchByKeys(
+            studentAttendanceIndex,
+            collectStudentRecordKeys(student),
+            (record) =>
+                record.student?.id
+                || record._id
+                || record.student?.fullName
+                || ''
+        );
+        const attendance = attendanceMatch.item;
+        const attendanceCommentAreaId = String(
+            (attendance?.commentByAreas || []).find((item) =>
+                String(item?.commentAreaId ?? '').trim()
+            )?.commentAreaId ?? ''
+        ).trim() || null;
+        const commentText = readAttendanceCommentText(attendance);
+        const hasComment = normalizeCommentText(commentText).length > 0;
+
+        return [{
+            key: buildStudentCommentKey(student, name),
+            name,
+            studentId: student?.id ?? null,
+            studentAttendanceId: attendance?._id ?? null,
+            classSiteId: classStudent.classSite?._id ?? classSiteId ?? null,
+            courseProcessId,
+            sessionNumber,
+            commentAreaId: attendanceCommentAreaId ?? commentAreaId,
+            hasComment
+        }];
+    });
+    const missingCommentStudents = students
+        .filter((item) => !item.hasComment)
+        .map((item) => item.name);
+
+    return {
+        classSiteId,
+        courseProcessId,
+        sessionNumber,
+        commentAreaId,
+        slotId: slot._id ?? null,
+        slotStartTime: slot.startTime ?? slot.date ?? null,
+        slotEndTime: slot.endTime ?? null,
+        missingCommentStudentCount: missingCommentStudents.length,
+        missingCommentStudents,
+        students
+    };
+}
+
 export function createClassRouter(lmsService: LmsService): Router {
     const router = Router();
 
@@ -866,6 +985,18 @@ export function createClassRouter(lmsService: LmsService): Router {
                 .map((cls) => {
                     const students = collectStudentsForPrincipal(cls, principal);
                     const coTeachers = collectCoTeachers(cls, principal);
+                    const slotsWithStart = (cls.slots || [])
+                        .flatMap((slot) => {
+                            const startMs = parseDateToMs(slot.startTime ?? slot.date);
+                            if (startMs === null) {
+                                return [];
+                            }
+                            return [{
+                                slot,
+                                startMs
+                            }];
+                        })
+                        .sort((a, b) => a.startMs - b.startMs);
                     const slotStartTimes = (cls.slots || [])
                         .map((slot) => parseDateToMs(slot.startTime ?? slot.date))
                         .filter((value): value is number => value !== null)
@@ -885,60 +1016,23 @@ export function createClassRouter(lmsService: LmsService): Router {
                             normalizeIdentity(slot._id) === normalizeIdentity(nextAttendanceWindow.slotId)
                         )
                         : null;
-                    const nextCommentSessionNumber = typeof nextCommentSlot?.index === 'number'
-                        ? nextCommentSlot.index
-                        : undefined;
-                    const nextCommentClassSiteId = String(
-                        (cls.classSites || []).find((site) => String(site?._id ?? '').trim())?._id ?? ''
-                    ).trim() || undefined;
-                    const nextCommentCourseProcessId = String(
-                        cls.courseProcessId ?? cls.courseProcess?.id ?? ''
-                    ).trim() || undefined;
-                    const nextCommentAreaId = nextCommentSlot
-                        ? pickCommentAreaIdFromCourseProcess(cls.courseProcess, nextCommentSessionNumber)
-                        : undefined;
-                    const nextCommentAttendanceIndex = createLookupIndex(
-                        nextCommentSlot?.studentAttendance || [],
-                        (record) => collectStudentRecordKeys(record.student)
-                    );
-                    const nextCommentStudents = nextCommentSlot
-                        ? (cls.students || [])
-                            .filter((item) => item.activeInClass !== false)
-                            .flatMap((classStudent) => {
-                                const student = classStudent.student;
-                                const name = studentDisplayName(student);
-                                if (!name) {
-                                    return [];
-                                }
-
-                                const attendanceMatch = findSingleMatchByKeys(
-                                    nextCommentAttendanceIndex,
-                                    collectStudentRecordKeys(student),
-                                    (record) =>
-                                        record.student?.id
-                                        || record._id
-                                        || record.student?.fullName
-                                        || ''
-                                );
-                                const attendance = attendanceMatch.item;
-                                const attendanceCommentAreaId = String(
-                                    (attendance?.commentByAreas || []).find((item) =>
-                                        String(item?.commentAreaId ?? '').trim()
-                                    )?.commentAreaId ?? ''
-                                ).trim() || undefined;
-
-                                return [{
-                                    key: buildStudentCommentKey(student, name),
-                                    name,
-                                    studentId: student?.id ?? null,
-                                    studentAttendanceId: attendance?._id ?? null,
-                                    classSiteId: classStudent.classSite?._id ?? nextCommentClassSiteId ?? null,
-                                    courseProcessId: nextCommentCourseProcessId ?? null,
-                                    sessionNumber: nextCommentSessionNumber ?? null,
-                                    commentAreaId: attendanceCommentAreaId ?? nextCommentAreaId ?? null
-                                }];
-                            })
-                        : [];
+                    const nextCommentStartMs = parseDateToMs(nextCommentSlot?.startTime ?? nextCommentSlot?.date);
+                    const previousCommentCandidates = slotsWithStart.filter((item) => {
+                        const isSameAsNext = nextCommentSlot
+                            && normalizeIdentity(item.slot._id) === normalizeIdentity(nextCommentSlot._id);
+                        if (isSameAsNext) {
+                            return false;
+                        }
+                        if (nextCommentStartMs !== null) {
+                            return item.startMs < nextCommentStartMs;
+                        }
+                        return item.startMs <= nowMs;
+                    });
+                    const previousCommentSlot = previousCommentCandidates.length > 0
+                        ? previousCommentCandidates[previousCommentCandidates.length - 1].slot
+                        : null;
+                    const nextCommentContext = buildPublicCommentContext(cls, nextCommentSlot);
+                    const previousCommentContext = buildPublicCommentContext(cls, previousCommentSlot);
 
                     return {
                         classId: cls.id,
@@ -954,16 +1048,8 @@ export function createClassRouter(lmsService: LmsService): Router {
                         coTeachers,
                         totalSlots: (cls.slots || []).length,
                         nextAttendanceWindow,
-                        nextCommentContext: nextCommentSlot
-                            ? {
-                                classSiteId: nextCommentClassSiteId ?? null,
-                                courseProcessId: nextCommentCourseProcessId ?? null,
-                                sessionNumber: nextCommentSessionNumber ?? null,
-                                commentAreaId: nextCommentAreaId ?? null,
-                                slotId: nextCommentSlot._id ?? nextAttendanceWindow?.slotId ?? null,
-                                students: nextCommentStudents
-                            }
-                            : null
+                        nextCommentContext,
+                        previousCommentContext
                     };
                 });
 
@@ -1200,12 +1286,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                 const richContent = String(commentByArea?.content ?? '').trim();
                 const scoreSource = richContent || String(attendance?.comment ?? attendance?.note ?? '').trim();
                 const scoreData = scoreSource ? extractScoresFromCommentHtml(scoreSource) : {};
-                const narrativeSource = richContent
-                    || String(attendance?.comment ?? '').trim()
-                    || String(attendance?.note ?? '').trim();
-                const narrativeComment = narrativeSource
-                    ? extractNarrativeCommentFromHtml(narrativeSource)
-                    : normalizeCommentText(attendance?.note);
+                const narrativeComment = readAttendanceCommentText(attendance);
 
                 upsertComment({
                     key: buildStudentCommentKey(student),
@@ -1236,12 +1317,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                 const richContent = String(commentByArea?.content ?? '').trim();
                 const scoreSource = richContent || String(attendance.comment ?? attendance.note ?? '').trim();
                 const scoreData = scoreSource ? extractScoresFromCommentHtml(scoreSource) : {};
-                const narrativeSource = richContent
-                    || String(attendance.comment ?? '').trim()
-                    || String(attendance.note ?? '').trim();
-                const narrativeComment = narrativeSource
-                    ? extractNarrativeCommentFromHtml(narrativeSource)
-                    : normalizeCommentText(attendance.note);
+                const narrativeComment = readAttendanceCommentText(attendance);
 
                 upsertComment({
                     key: buildStudentCommentKey(student, name),
