@@ -9,6 +9,38 @@ import '../services/backend_api_service.dart';
 import '../services/dashboard_cache_service.dart';
 import '../theme/app_theme.dart';
 
+String _formatDurationMinutesVi(
+  int minutes, {
+  bool compact = false,
+}) {
+  final safeMinutes = minutes < 0 ? 0 : minutes;
+  final days = safeMinutes ~/ (24 * 60);
+  final hours = (safeMinutes % (24 * 60)) ~/ 60;
+  final mins = safeMinutes % 60;
+
+  if (compact) {
+    if (days > 0) {
+      return '${days}d ${hours}h';
+    }
+    if (hours > 0) {
+      return '${hours}h ${mins}m';
+    }
+    return '${mins}m';
+  }
+
+  final parts = <String>[];
+  if (days > 0) {
+    parts.add('$days ngày');
+  }
+  if (hours > 0) {
+    parts.add('$hours giờ');
+  }
+  if (mins > 0 || parts.isEmpty) {
+    parts.add('$mins phút');
+  }
+  return parts.join(' ');
+}
+
 class HomeScreen extends StatefulWidget {
   final AuthSessionManager sessionManager;
   final Future<void> Function() onSignOut;
@@ -42,6 +74,10 @@ class _HomeScreenState extends State<HomeScreen> {
   int _selectedIndex = 0;
   late int _selectedPayrollMonth;
   late int _selectedPayrollYear;
+  final Map<String, _AttendanceUiStatus> _attendanceDraft = {};
+  final Map<String, Map<String, _AttendanceUiStatus>>
+      _attendanceSavedSnapshotByClassId = {};
+  final Map<String, DateTime> _attendanceSavedAtByClassId = {};
 
   @override
   void initState() {
@@ -135,7 +171,10 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    final classes = await _api.getClasses(activeOnly: true);
+    final classes = await _api.getClasses(
+      activeOnly: true,
+      username: username,
+    );
     final runningClasses = _filterRunningClasses(classes);
     await _dashboardCache.saveClasses(
       username: username,
@@ -162,6 +201,7 @@ class _HomeScreenState extends State<HomeScreen> {
       lookAheadMinutes: 7 * 24 * 60,
       maxSlots: 200,
       activeOnly: true,
+      username: username,
     );
     await _dashboardCache.saveReminders(
       username: username,
@@ -550,39 +590,186 @@ class _HomeScreenState extends State<HomeScreen> {
     return parsed.millisecondsSinceEpoch;
   }
 
-  String _weekdayVi(int weekday) {
-    switch (weekday) {
-      case DateTime.monday:
-        return 'Thá»© Hai';
-      case DateTime.tuesday:
-        return 'Thá»© Ba';
-      case DateTime.wednesday:
-        return 'Thá»© TÆ°';
-      case DateTime.thursday:
-        return 'Thá»© NÄƒm';
-      case DateTime.friday:
-        return 'Thá»© SÃ¡u';
-      case DateTime.saturday:
-        return 'Thá»© Báº£y';
-      case DateTime.sunday:
-      default:
-        return 'Chá»§ Nháº­t';
+  String _formatCompactCountdownToClass(String? slotStartTime) {
+    final start = _parseDateTimeLoose(slotStartTime);
+    if (start == null) {
+      return '--';
+    }
+
+    return _formatDurationMinutesVi(
+      start.difference(DateTime.now()).inMinutes,
+      compact: true,
+    );
+  }
+
+  String _attendanceParticipantKey({
+    required String name,
+    required bool isCoTeacher,
+  }) {
+    final kind = isCoTeacher ? 'co_teacher' : 'student';
+    return '$kind::$name';
+  }
+
+  String _attendanceDraftKey({
+    required String classId,
+    required String participantKey,
+  }) {
+    return '$classId::$participantKey';
+  }
+
+  _AttendanceUiStatus? _attendanceStatusFor({
+    required String classId,
+    required String participantKey,
+  }) {
+    return _attendanceDraft[_attendanceDraftKey(
+      classId: classId,
+      participantKey: participantKey,
+    )];
+  }
+
+  void _setAttendanceStatus({
+    required String classId,
+    required String participantKey,
+    required _AttendanceUiStatus? status,
+  }) {
+    final key = _attendanceDraftKey(
+      classId: classId,
+      participantKey: participantKey,
+    );
+    setState(() {
+      if (status == null) {
+        _attendanceDraft.remove(key);
+      } else {
+        _attendanceDraft[key] = status;
+      }
+    });
+  }
+
+  int _countAttendanceStatus({
+    required String classId,
+    required List<_AttendanceParticipant> participants,
+    required _AttendanceUiStatus status,
+  }) {
+    var count = 0;
+    for (final participant in participants) {
+      if (_attendanceStatusFor(
+            classId: classId,
+            participantKey: participant.key,
+          ) ==
+          status) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  Map<String, _AttendanceUiStatus> _buildAttendanceSnapshotForClass({
+    required String classId,
+    required List<_AttendanceParticipant> participants,
+  }) {
+    final result = <String, _AttendanceUiStatus>{};
+    for (final participant in participants) {
+      final status = _attendanceStatusFor(
+        classId: classId,
+        participantKey: participant.key,
+      );
+      if (status != null) {
+        result[participant.key] = status;
+      }
+    }
+    return result;
+  }
+
+  bool _mapAttendanceEquals(
+    Map<String, _AttendanceUiStatus> a,
+    Map<String, _AttendanceUiStatus> b,
+  ) {
+    if (a.length != b.length) {
+      return false;
+    }
+    for (final entry in a.entries) {
+      if (b[entry.key] != entry.value) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool _isAttendanceDirtyForClass({
+    required String classId,
+    required List<_AttendanceParticipant> participants,
+  }) {
+    final current = _buildAttendanceSnapshotForClass(
+      classId: classId,
+      participants: participants,
+    );
+    final saved = _attendanceSavedSnapshotByClassId[classId] ?? const {};
+    return !_mapAttendanceEquals(current, saved);
+  }
+
+  String _attendanceStatusLabel(_AttendanceUiStatus status) {
+    switch (status) {
+      case _AttendanceUiStatus.present:
+        return 'Có';
+      case _AttendanceUiStatus.late:
+        return 'Đi trễ';
+      case _AttendanceUiStatus.excusedAbsent:
+        return 'Nghỉ có phép';
+      case _AttendanceUiStatus.unexcusedAbsent:
+        return 'Nghỉ không phép';
     }
   }
 
-  String _formatDayHeader(DateTime date) {
-    return '${_weekdayVi(date.weekday)}, ${DateFormat('dd/MM/yyyy').format(date)}';
+  IconData _attendanceStatusIcon(_AttendanceUiStatus status) {
+    switch (status) {
+      case _AttendanceUiStatus.present:
+        return Icons.check_circle_rounded;
+      case _AttendanceUiStatus.late:
+        return Icons.watch_later_rounded;
+      case _AttendanceUiStatus.excusedAbsent:
+        return Icons.event_busy_rounded;
+      case _AttendanceUiStatus.unexcusedAbsent:
+        return Icons.cancel_rounded;
+    }
   }
 
-  String _formatShortDate(String? iso) {
-    if (iso == null || iso.isEmpty) {
-      return '--';
+  Color _attendanceStatusColor(_AttendanceUiStatus status) {
+    switch (status) {
+      case _AttendanceUiStatus.present:
+        return Colors.green.shade700;
+      case _AttendanceUiStatus.late:
+        return Colors.orange.shade700;
+      case _AttendanceUiStatus.excusedAbsent:
+        return Colors.blue.shade700;
+      case _AttendanceUiStatus.unexcusedAbsent:
+        return Colors.red.shade700;
     }
-    final parsed = DateTime.tryParse(iso);
-    if (parsed == null) {
-      return '--';
+  }
+
+  void _saveAttendanceForClass({
+    required String classId,
+    required List<_AttendanceParticipant> participants,
+  }) {
+    final snapshot = _buildAttendanceSnapshotForClass(
+      classId: classId,
+      participants: participants,
+    );
+
+    setState(() {
+      _attendanceSavedSnapshotByClassId[classId] = snapshot;
+      _attendanceSavedAtByClassId[classId] = DateTime.now();
+    });
+
+    if (!mounted) {
+      return;
     }
-    return DateFormat('dd/MM').format(parsed.toLocal());
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content:
+            Text('Đã lưu ${snapshot.length} kết quả điểm danh cho lớp này.'),
+      ),
+    );
   }
 
   Widget _buildUserHeader() {
@@ -830,8 +1017,11 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildClassesPage() {
     return RefreshIndicator(
       onRefresh: _forceRefreshAll,
-      child: FutureBuilder<List<ClassSummary>>(
-        future: _classesFuture,
+      child: FutureBuilder<List<Object>>(
+        future: Future.wait<Object>([
+          _classesFuture,
+          _remindersFuture,
+        ]),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -840,12 +1030,78 @@ class _HomeScreenState extends State<HomeScreen> {
             return _ErrorView(message: snapshot.error.toString());
           }
 
-          final classes = (snapshot.data ?? const <ClassSummary>[])
-            ..sort((a, b) => a.className.compareTo(b.className));
+          final payload = snapshot.data ?? const <Object>[];
+          final classes = List<ClassSummary>.from(
+            payload.isNotEmpty && payload.first is List<ClassSummary>
+                ? payload.first as List<ClassSummary>
+                : const <ClassSummary>[],
+          )..sort((a, b) => a.className.compareTo(b.className));
+
+          final reminders = List<ReminderItem>.from(
+            payload.length > 1 && payload[1] is List<ReminderItem>
+                ? payload[1] as List<ReminderItem>
+                : const <ReminderItem>[],
+          );
 
           if (classes.isEmpty) {
             return const _EmptyView(message: 'Không có lớp đang hoạt động.');
           }
+
+          final remindersByClassId = <String, List<ReminderItem>>{};
+          for (final reminder in reminders) {
+            remindersByClassId
+                .putIfAbsent(reminder.classId, () => [])
+                .add(reminder);
+          }
+          for (final classReminders in remindersByClassId.values) {
+            classReminders.sort((a, b) {
+              final startDiff =
+                  _sortTimeMs(a.slotStartTime) - _sortTimeMs(b.slotStartTime);
+              if (startDiff != 0) {
+                return startDiff;
+              }
+              final endDiff =
+                  _sortTimeMs(a.slotEndTime) - _sortTimeMs(b.slotEndTime);
+              if (endDiff != 0) {
+                return endDiff;
+              }
+              return a.className.compareTo(b.className);
+            });
+          }
+
+          ReminderItem? nextReminderForClass(ClassSummary cls) {
+            final classReminders = remindersByClassId[cls.classId];
+            if (classReminders == null || classReminders.isEmpty) {
+              return null;
+            }
+            return classReminders.first;
+          }
+
+          String? nextStartTimeForClass(ClassSummary cls) {
+            final nextReminder = nextReminderForClass(cls);
+            if (nextReminder != null) {
+              return nextReminder.slotStartTime;
+            }
+            return cls.nextAttendanceWindow?.slotStartTime;
+          }
+
+          classes.sort((a, b) {
+            final aNextStart = nextStartTimeForClass(a);
+            final bNextStart = nextStartTimeForClass(b);
+            final aHasNext = aNextStart != null && aNextStart.trim().isNotEmpty;
+            final bHasNext = bNextStart != null && bNextStart.trim().isNotEmpty;
+
+            if (aHasNext && bHasNext) {
+              final diff = _sortTimeMs(aNextStart) - _sortTimeMs(bNextStart);
+              if (diff != 0) {
+                return diff;
+              }
+            }
+            if (aHasNext != bHasNext) {
+              return aHasNext ? -1 : 1;
+            }
+            return a.className.compareTo(b.className);
+          });
 
           return ListView.separated(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -854,10 +1110,70 @@ class _HomeScreenState extends State<HomeScreen> {
             separatorBuilder: (_, __) => const SizedBox(height: 10),
             itemBuilder: (context, index) {
               final cls = classes[index];
-              final studentsPreview = cls.students.take(6).toList();
-              final hiddenStudents =
-                  cls.students.length - studentsPreview.length;
-              final nextWindow = cls.nextAttendanceWindow;
+              final nextReminder = nextReminderForClass(cls);
+              final roleLabel = nextReminder != null
+                  ? (nextReminder.roleShortName ??
+                      nextReminder.roleName ??
+                      'Chưa rõ vai trò')
+                  : 'Chưa rõ vai trò';
+              final participants = <_AttendanceParticipant>[];
+              final participantSeen = <String>{};
+
+              void addParticipants(
+                List<String> names, {
+                required bool isCoTeacher,
+              }) {
+                for (final rawName in names) {
+                  final name = rawName.trim();
+                  if (name.isEmpty) {
+                    continue;
+                  }
+                  final participantKey = _attendanceParticipantKey(
+                    name: name,
+                    isCoTeacher: isCoTeacher,
+                  );
+                  if (!participantSeen.add(participantKey)) {
+                    continue;
+                  }
+                  participants.add(
+                    _AttendanceParticipant(
+                      key: participantKey,
+                      name: name,
+                      isCoTeacher: isCoTeacher,
+                    ),
+                  );
+                }
+              }
+
+              addParticipants(cls.students, isCoTeacher: false);
+              addParticipants(cls.coTeachers, isCoTeacher: true);
+
+              final presentCount = _countAttendanceStatus(
+                classId: cls.classId,
+                participants: participants,
+                status: _AttendanceUiStatus.present,
+              );
+              final lateCount = _countAttendanceStatus(
+                classId: cls.classId,
+                participants: participants,
+                status: _AttendanceUiStatus.late,
+              );
+              final excusedCount = _countAttendanceStatus(
+                classId: cls.classId,
+                participants: participants,
+                status: _AttendanceUiStatus.excusedAbsent,
+              );
+              final unexcusedCount = _countAttendanceStatus(
+                classId: cls.classId,
+                participants: participants,
+                status: _AttendanceUiStatus.unexcusedAbsent,
+              );
+              final isDirty = _isAttendanceDirtyForClass(
+                classId: cls.classId,
+                participants: participants,
+              );
+              final savedAt = _attendanceSavedAtByClassId[cls.classId];
+
               return Card(
                 child: Padding(
                   padding: const EdgeInsets.all(14),
@@ -889,222 +1205,253 @@ class _HomeScreenState extends State<HomeScreen> {
                             icon: Icons.group_rounded,
                             label: '${cls.totalStudents} học viên',
                           ),
-                          _MiniStat(
-                            icon: Icons.layers_rounded,
-                            label: '${cls.totalSlots} slots',
-                          ),
-                          _MiniStat(
-                            icon: Icons.calendar_today_rounded,
-                            label:
-                                'Kết thúc: ${_formatShortDate(cls.classEndDate)}',
-                          ),
+                          if (cls.coTeachers.isNotEmpty)
+                            _MiniStat(
+                              icon: Icons.groups_rounded,
+                              label: '${cls.coTeachers.length} đồng giáo viên',
+                            ),
+                          if (nextReminder != null)
+                            _MiniStat(
+                              icon: Icons.timer_rounded,
+                              label:
+                                  'Tới lớp: ${_formatCompactCountdownToClass(nextReminder.slotStartTime)}',
+                            ),
                         ],
                       ),
-                      if (nextWindow != null) ...[
-                        const SizedBox(height: 10),
+                      if (cls.coTeachers.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          'Đồng giáo viên: ${cls.coTeachers.join(', ')}',
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Colors.blueGrey.shade700,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                        ),
+                      ],
+                      const SizedBox(height: 10),
+                      if (nextReminder != null) ...[
                         Container(
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
                             color: const Color(0xFFF3F7FF),
                             borderRadius: BorderRadius.circular(12),
                           ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Icon(
-                                Icons.alarm_on_rounded,
-                                size: 18,
-                                color: Color(0xFF1C4ED8),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  'Khung điểm danh tiếp theo: '
-                                  '${_formatDateTime(nextWindow.attendanceOpenAt)} '
-                                  '- ${_formatDateTime(nextWindow.attendanceCloseAt)}',
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                      if (studentsPreview.isNotEmpty) ...[
-                        const SizedBox(height: 12),
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: [
-                            ...studentsPreview.map(
-                              (student) => Chip(
-                                label: Text(student),
-                                visualDensity: VisualDensity.compact,
-                              ),
-                            ),
-                            if (hiddenStudents > 0)
-                              Chip(
-                                label: Text('+$hiddenStudents học viên'),
-                                visualDensity: VisualDensity.compact,
-                              ),
-                          ],
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              );
-            },
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildSchedulePage() {
-    return RefreshIndicator(
-      onRefresh: _forceRefreshAll,
-      child: FutureBuilder<List<ReminderItem>>(
-        future: _remindersFuture,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
-            return _ErrorView(message: snapshot.error.toString());
-          }
-
-          final reminders = List<ReminderItem>.from(
-            snapshot.data ?? const <ReminderItem>[],
-          )..sort((a, b) {
-              final startDiff =
-                  _sortTimeMs(a.slotStartTime) - _sortTimeMs(b.slotStartTime);
-              if (startDiff != 0) {
-                return startDiff;
-              }
-              final endDiff =
-                  _sortTimeMs(a.slotEndTime) - _sortTimeMs(b.slotEndTime);
-              if (endDiff != 0) {
-                return endDiff;
-              }
-              return a.className.compareTo(b.className);
-            });
-
-          if (reminders.isEmpty) {
-            return const _EmptyView(message: 'Không có lịch dạy sắp tới.');
-          }
-
-          final grouped = <_ScheduleGroup>[];
-          for (final reminder in reminders) {
-            final slotStart = _parseDateTimeLoose(reminder.slotStartTime);
-            final key = slotStart != null
-                ? DateFormat('yyyy-MM-dd').format(slotStart)
-                : 'unknown';
-
-            if (grouped.isEmpty || grouped.last.key != key) {
-              grouped.add(
-                _ScheduleGroup(
-                  key: key,
-                  header: slotStart != null
-                      ? _formatDayHeader(slotStart)
-                      : 'Không rõ ngày',
-                  items: [reminder],
-                ),
-              );
-            } else {
-              grouped.last.items.add(reminder);
-            }
-          }
-
-          return ListView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-            children: grouped.map((group) {
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 14),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 8, left: 2),
-                      child: Text(
-                        group.header,
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: const Color(0xFF1C4ED8),
-                                ),
-                      ),
-                    ),
-                    ...group.items.map((reminder) {
-                      final badge = _ReminderBadge.fromReminder(reminder);
-                      final roleLabel = reminder.roleShortName ??
-                          reminder.roleName ??
-                          'Chưa rõ vai trò';
-
-                      return Card(
-                        margin: const EdgeInsets.only(bottom: 10),
-                        child: Padding(
-                          padding: const EdgeInsets.all(14),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      reminder.className,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium,
-                                    ),
-                                  ),
-                                  _Pill(
-                                    label: badge.label,
-                                    background: badge.background,
-                                    foreground: badge.foreground,
-                                    icon: badge.icon,
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8),
                               Text(
-                                'Slot ${reminder.slotIndex ?? '-'} · '
-                                '${_formatDateTime(reminder.slotStartTime)} '
-                                '- ${_formatDateTime(reminder.slotEndTime)}',
+                                'Buổi sắp tới',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleSmall
+                                    ?.copyWith(
+                                      color: const Color(0xFF1C4ED8),
+                                      fontWeight: FontWeight.w800,
+                                    ),
                               ),
                               const SizedBox(height: 6),
-                              Text('Vai trò: $roleLabel'),
+                              Text('Role của bạn: $roleLabel'),
                               Text(
-                                'Mở điểm danh: ${_formatDateTime(reminder.attendanceOpenAt)}',
+                                'Thời gian buổi học: ${_formatDateTime(nextReminder.slotStartTime)} - '
+                                '${_formatDateTime(nextReminder.slotEndTime)}',
                               ),
-                              Text(
-                                'Đóng điểm danh: ${_formatDateTime(reminder.attendanceCloseAt)}',
-                              ),
-                              const SizedBox(height: 8),
+                              const SizedBox(height: 6),
                               Wrap(
                                 spacing: 8,
                                 runSpacing: 8,
                                 children: [
                                   _MiniStat(
-                                    icon: Icons.group_rounded,
-                                    label:
-                                        '${reminder.totalStudentsInSlot} học viên',
+                                    icon: Icons.login_rounded,
+                                    label: nextReminder.isWindowOpen
+                                        ? 'Đóng điểm danh sau: ${_formatDurationMinutesVi(nextReminder.minutesUntilWindowClose, compact: true)}'
+                                        : 'Mở điểm danh sau: ${_formatDurationMinutesVi(nextReminder.minutesUntilWindowOpen, compact: true)}',
                                   ),
                                   _MiniStat(
-                                    icon: Icons.schedule_rounded,
-                                    label: reminder.isWindowOpen
-                                        ? 'Còn ${reminder.minutesUntilWindowClose} phút'
-                                        : 'Còn ${reminder.minutesUntilWindowOpen} phút',
+                                    icon: Icons.tag_rounded,
+                                    label:
+                                        'Slot ${nextReminder.slotIndex ?? '-'}',
                                   ),
                                 ],
                               ),
                             ],
                           ),
                         ),
-                      );
-                    }),
-                  ],
+                      ] else ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF7F8FB),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Text(
+                              'Chưa có buổi học sắp tới cho lớp này.'),
+                        ),
+                      ],
+                      const SizedBox(height: 12),
+                      Container(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.blueGrey.shade100),
+                        ),
+                        child: ExpansionTile(
+                          tilePadding:
+                              const EdgeInsets.symmetric(horizontal: 12),
+                          childrenPadding:
+                              const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                          title: Text('Điểm danh (${participants.length})'),
+                          subtitle: Text(
+                            'Có $presentCount · Trễ $lateCount · Có phép $excusedCount · Không phép $unexcusedCount',
+                          ),
+                          children: participants.isEmpty
+                              ? const [
+                                  Padding(
+                                    padding: EdgeInsets.only(bottom: 8),
+                                    child: Text(
+                                      'Chưa có học viên/đồng giáo viên để điểm danh.',
+                                    ),
+                                  ),
+                                ]
+                              : [
+                                  ...participants.map((participant) {
+                                    final status = _attendanceStatusFor(
+                                      classId: cls.classId,
+                                      participantKey: participant.key,
+                                    );
+
+                                    return Container(
+                                      margin: const EdgeInsets.only(bottom: 8),
+                                      padding: const EdgeInsets.all(10),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFFF8FAFF),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: Text(
+                                                  participant.name,
+                                                  style: Theme.of(context)
+                                                      .textTheme
+                                                      .bodyMedium
+                                                      ?.copyWith(
+                                                        fontWeight:
+                                                            FontWeight.w700,
+                                                      ),
+                                                ),
+                                              ),
+                                              if (participant.isCoTeacher)
+                                                _Pill(
+                                                  label: 'Đồng GV',
+                                                  background:
+                                                      const Color(0xFFE3EEFF),
+                                                  foreground:
+                                                      const Color(0xFF1C4ED8),
+                                                  icon: Icons.groups_rounded,
+                                                ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 8),
+                                          Wrap(
+                                            spacing: 8,
+                                            runSpacing: 8,
+                                            children: [
+                                              ..._AttendanceUiStatus.values.map(
+                                                (option) {
+                                                  final isSelected =
+                                                      status == option;
+                                                  return Tooltip(
+                                                    message:
+                                                        _attendanceStatusLabel(
+                                                      option,
+                                                    ),
+                                                    triggerMode:
+                                                        TooltipTriggerMode
+                                                            .longPress,
+                                                    child: ChoiceChip(
+                                                      label: Icon(
+                                                        _attendanceStatusIcon(
+                                                          option,
+                                                        ),
+                                                        size: 18,
+                                                      ),
+                                                      selected: isSelected,
+                                                      selectedColor:
+                                                          _attendanceStatusColor(
+                                                        option,
+                                                      ).withValues(alpha: 0.18),
+                                                      side: BorderSide(
+                                                        color: isSelected
+                                                            ? _attendanceStatusColor(
+                                                                option,
+                                                              )
+                                                            : Colors.blueGrey
+                                                                .shade200,
+                                                      ),
+                                                      onSelected: (selected) {
+                                                        _setAttendanceStatus(
+                                                          classId: cls.classId,
+                                                          participantKey:
+                                                              participant.key,
+                                                          status: selected
+                                                              ? option
+                                                              : null,
+                                                        );
+                                                      },
+                                                    ),
+                                                  );
+                                                },
+                                              ),
+                                            ],
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  }),
+                                  const SizedBox(height: 4),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: FilledButton.icon(
+                                      onPressed: participants.isEmpty
+                                          ? null
+                                          : () => _saveAttendanceForClass(
+                                                classId: cls.classId,
+                                                participants: participants,
+                                              ),
+                                      icon: const Icon(Icons.save_rounded),
+                                      label:
+                                          const Text('Lưu kết quả điểm danh'),
+                                    ),
+                                  ),
+                                  if (savedAt != null) ...[
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      'Đã lưu lúc ${DateFormat('HH:mm:ss - dd/MM/yyyy').format(savedAt)}'
+                                      '${isDirty ? ' · Có thay đổi chưa lưu' : ''}',
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(
+                                            color: isDirty
+                                                ? Colors.orange.shade800
+                                                : Colors.green.shade700,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                    ),
+                                  ],
+                                ],
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               );
-            }).toList(),
+            },
           );
         },
       ),
@@ -1280,6 +1627,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     const SizedBox(height: 10),
                     Text(
                       'Thu nhập lớp học: ${_formatMoney(moneySummary.classIncome)}',
+                      style: TextStyle(
+                        color: Colors.green.shade700,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     Text(
                       'Thu nhập office hour: ${_formatMoney(moneySummary.officeHourIncome)}',
@@ -1395,7 +1746,17 @@ class _HomeScreenState extends State<HomeScreen> {
                               const EdgeInsets.fromLTRB(12, 0, 12, 8),
                           title: Text(cls.className),
                           subtitle: Text(
-                            '${cls.taughtSlotCount} slots · ${cls.totalHours}h · ${_formatMoney(classIncome)}',
+                            '${cls.taughtSlotCount} slots · ${cls.totalHours}h',
+                          ),
+                          trailing: Text(
+                            _formatMoney(classIncome),
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleSmall
+                                ?.copyWith(
+                                  color: Colors.green.shade700,
+                                  fontWeight: FontWeight.w800,
+                                ),
                           ),
                           children: cls.slots
                               .map(
@@ -1429,10 +1790,11 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final accents = Theme.of(context).extension<AppAccentColors>()!;
-    final titles = ['Tổng quan', 'Lớp học', 'Lịch dạy', 'Thu nhập'];
+    final titles = ['Tổng quan', 'Lớp học', 'Thu nhập'];
+    final safeIndex = _selectedIndex.clamp(0, titles.length - 1);
     return Scaffold(
       appBar: AppBar(
-        title: Text(titles[_selectedIndex]),
+        title: Text(titles[safeIndex]),
         actions: [
           IconButton(
             onPressed: _forceRefreshAll,
@@ -1447,11 +1809,10 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: IndexedStack(
-        index: _selectedIndex,
+        index: safeIndex,
         children: [
           _buildOverviewPage(),
           _buildClassesPage(),
-          _buildSchedulePage(),
           _buildPayrollPage(),
         ],
       ),
@@ -1463,7 +1824,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
         child: NavigationBar(
-          selectedIndex: _selectedIndex,
+          selectedIndex: safeIndex,
           onDestinationSelected: (index) {
             setState(() {
               _selectedIndex = index;
@@ -1481,11 +1842,6 @@ class _HomeScreenState extends State<HomeScreen> {
               label: 'Lớp học',
             ),
             NavigationDestination(
-              icon: Icon(Icons.event_note_outlined),
-              selectedIcon: Icon(Icons.event_note_rounded),
-              label: 'Lịch dạy',
-            ),
-            NavigationDestination(
               icon: Icon(Icons.account_balance_wallet_outlined),
               selectedIcon: Icon(Icons.account_balance_wallet_rounded),
               label: 'Thu nhập',
@@ -1493,7 +1849,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ],
         ),
       ),
-      floatingActionButton: _selectedIndex == 3
+      floatingActionButton: safeIndex == 2
           ? FloatingActionButton.extended(
               onPressed: _forceRefreshPayroll,
               icon: const Icon(Icons.sync_rounded),
@@ -1548,18 +1904,6 @@ class _SectionCard extends StatelessWidget {
       ),
     );
   }
-}
-
-class _ScheduleGroup {
-  final String key;
-  final String header;
-  final List<ReminderItem> items;
-
-  _ScheduleGroup({
-    required this.key,
-    required this.header,
-    required this.items,
-  });
 }
 
 class _KpiTile extends StatelessWidget {
@@ -1744,7 +2088,8 @@ class _ReminderBadge {
 
     if (reminder.minutesUntilWindowOpen > 0) {
       return _ReminderBadge(
-        label: 'Còn ${reminder.minutesUntilWindowOpen} phút',
+        label:
+            'Còn ${_formatDurationMinutesVi(reminder.minutesUntilWindowOpen)}',
         background: const Color(0xFFE3EEFF),
         foreground: const Color(0xFF1C4ED8),
         icon: Icons.schedule_rounded,
@@ -1876,6 +2221,25 @@ class _EmptyView extends StatelessWidget {
       ),
     );
   }
+}
+
+class _AttendanceParticipant {
+  final String key;
+  final String name;
+  final bool isCoTeacher;
+
+  const _AttendanceParticipant({
+    required this.key,
+    required this.name,
+    required this.isCoTeacher,
+  });
+}
+
+enum _AttendanceUiStatus {
+  present,
+  late,
+  excusedAbsent,
+  unexcusedAbsent,
 }
 
 class _PayrollMoneySummary {

@@ -134,6 +134,32 @@ function findMatchedAssignment(
     );
 }
 
+function slotHasTeacherSignals(slot: LmsSlotRecord): boolean {
+    return (slot.teachers || []).length > 0 || (slot.teacherAttendance || []).length > 0;
+}
+
+function slotMatchesPrincipal(
+    slot: LmsSlotRecord,
+    principal?: ReminderPrincipal | null
+): boolean {
+    const matchedSlotAssignment = findMatchedAssignment(slot.teachers, principal);
+    if (matchedSlotAssignment) {
+        return true;
+    }
+
+    const matchedAttendance = (slot.teacherAttendance || []).some((record) =>
+        matchesPrincipalUser(record.teacher, principal)
+    );
+    return matchedAttendance;
+}
+
+function classMatchesPrincipal(
+    cls: LmsClassRecord,
+    principal?: ReminderPrincipal | null
+): boolean {
+    return Boolean(findMatchedAssignment(cls.teachers, principal));
+}
+
 export function shouldIncludeSlotForPrincipal(
     cls: LmsClassRecord,
     slot: LmsSlotRecord,
@@ -143,21 +169,25 @@ export function shouldIncludeSlotForPrincipal(
         return true;
     }
 
-    const slotAssignments = slot.teachers || [];
-    const slotAttendance = slot.teacherAttendance || [];
-    const hasSlotTeacherSignals = slotAssignments.length > 0 || slotAttendance.length > 0;
+    const slots = cls.slots || [];
+    const slotsWithSignals = slots.filter(slotHasTeacherSignals);
+    const hasSlotLevelData = slotsWithSignals.length > 0;
 
-    const matchedSlotAssignment = findMatchedAssignment(slotAssignments, principal);
-    const matchedAttendance = slotAttendance.some((record) =>
-        matchesPrincipalUser(record.teacher, principal)
-    );
+    if (hasSlotLevelData) {
+        const hasAnyMatchedSlot = slotsWithSignals.some((candidateSlot) =>
+            slotMatchesPrincipal(candidateSlot, principal)
+        );
+        if (!hasAnyMatchedSlot) {
+            return false;
+        }
 
-    if (hasSlotTeacherSignals) {
-        return Boolean(matchedSlotAssignment || matchedAttendance);
+        if (!slotHasTeacherSignals(slot)) {
+            return false;
+        }
+        return slotMatchesPrincipal(slot, principal);
     }
 
-    const matchedClassAssignment = findMatchedAssignment(cls.teachers, principal);
-    return Boolean(matchedClassAssignment);
+    return classMatchesPrincipal(cls, principal);
 }
 
 function resolveRoleForPrincipal(

@@ -88,12 +88,18 @@ class BackendApiService {
     bool activeOnly = true,
     int itemsPerPage = 50,
     int maxPages = 10,
+    String? username,
   }) async {
-    final json = await _getJson('/classes', query: {
+    final query = <String, String>{
       'activeOnly': activeOnly.toString(),
       'itemsPerPage': itemsPerPage.toString(),
       'maxPages': maxPages.toString(),
-    });
+    };
+    if (username != null && username.trim().isNotEmpty) {
+      query['username'] = username.trim();
+    }
+
+    final json = await _getJson('/classes', query: query);
 
     final data = json['data'];
     if (data is! List) {
@@ -112,12 +118,18 @@ class BackendApiService {
     int lookAheadMinutes = 180,
     int maxSlots = 20,
     bool activeOnly = true,
+    String? username,
   }) async {
-    final json = await _getJson('/attendance-reminders', query: {
+    final query = <String, String>{
       'lookAheadMinutes': lookAheadMinutes.toString(),
       'maxSlots': maxSlots.toString(),
       'activeOnly': activeOnly.toString(),
-    });
+    };
+    if (username != null && username.trim().isNotEmpty) {
+      query['username'] = username.trim();
+    }
+
+    final json = await _getJson('/attendance-reminders', query: query);
 
     final data = json['data'];
     if (data is! List) {

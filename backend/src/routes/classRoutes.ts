@@ -118,15 +118,30 @@ function collectCoTeachers(
         shouldIncludeSlotForPrincipal(cls, slot, principal)
     );
     const hasScopedSlots = scopedSlots.length > 0;
+    const hasPrincipal =
+        Boolean(normalizeIdentity(principal?.teacherId))
+        || Boolean(
+            (principal?.usernames || [])
+                .map((item) => normalizeIdentity(item))
+                .filter(Boolean).length > 0
+        )
+        || Boolean(normalizeComparable(principal?.fullName))
+        || Boolean(normalizeIdentity(principal?.username));
+    const hasSlotLevelTeacherData = (cls.slots || []).some((slot) =>
+        (slot.teachers || []).length > 0 || (slot.teacherAttendance || []).length > 0
+    );
+    const allowClassWideFallback = !hasPrincipal || !hasSlotLevelTeacherData;
 
     const assignments: LmsTeacherAssignment[] = hasScopedSlots
         ? [
             ...(scopedSlots.flatMap((slot) => slot.teachers || []))
         ]
-        : [
+        : allowClassWideFallback
+            ? [
             ...(cls.teachers || []),
             ...((cls.slots || []).flatMap((slot) => slot.teachers || []))
-        ];
+        ]
+            : [];
 
     const pushCoTeacher = (assignment: LmsTeacherAssignment) => {
         if (assignment.isActive === false) {
@@ -161,7 +176,11 @@ function collectCoTeachers(
 
     assignments.forEach(pushCoTeacher);
 
-    const attendanceSlots = hasScopedSlots ? scopedSlots : (cls.slots || []);
+    const attendanceSlots = hasScopedSlots
+        ? scopedSlots
+        : allowClassWideFallback
+            ? (cls.slots || [])
+            : [];
     attendanceSlots.forEach((slot) => {
         (slot.teacherAttendance || []).forEach((attendance: LmsTeacherAttendanceRecord) => {
             pushCoTeacher({

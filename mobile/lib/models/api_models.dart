@@ -66,6 +66,7 @@ class ClassSummary {
   final bool isClassEnded;
   final int totalStudents;
   final List<String> students;
+  final List<String> coTeachers;
   final int totalSlots;
   final AttendanceWindow? nextAttendanceWindow;
 
@@ -77,6 +78,7 @@ class ClassSummary {
     required this.isClassEnded,
     required this.totalStudents,
     required this.students,
+    required this.coTeachers,
     required this.totalSlots,
     required this.nextAttendanceWindow,
   });
@@ -91,6 +93,7 @@ class ClassSummary {
       isClassEnded: json['isClassEnded'] == true,
       totalStudents: _asInt(json['totalStudents']),
       students: _asStringList(json['students']),
+      coTeachers: _asStringList(json['coTeachers']),
       totalSlots: _asInt(json['totalSlots']),
       nextAttendanceWindow: (next is Map<String, dynamic>)
           ? AttendanceWindow.fromJson(next)
@@ -107,6 +110,7 @@ class ClassSummary {
       'isClassEnded': isClassEnded,
       'totalStudents': totalStudents,
       'students': students,
+      'coTeachers': coTeachers,
       'totalSlots': totalSlots,
       'nextAttendanceWindow': nextAttendanceWindow?.toJson(),
     };
