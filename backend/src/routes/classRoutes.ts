@@ -12,8 +12,10 @@ import {
 import { parseBearerToken, parseBooleanQuery, parseIntegerQuery, sanitizePositiveInt } from '../utils/requestParsers';
 import {
     LmsClassRecord,
+    LmsClassStudent,
     LmsSlotAttendanceCommand,
     LmsSlotAttendanceStatus,
+    LmsStudentAttendanceRecord,
     LmsStudentAttendancePayload,
     LmsTeacherAssignment,
     LmsTeacherAttendancePayload,
@@ -263,6 +265,25 @@ type AttendanceSaveUnresolvedParticipant = {
     reason: 'not_found' | 'ambiguous';
 };
 
+type AttendanceCommentInput = {
+    key: string;
+    name: string;
+    studentId?: string;
+    comment: string;
+};
+
+type AttendanceCommentRequestPayload = {
+    classId: string;
+    slotId: string;
+    comments: AttendanceCommentInput[];
+};
+
+type AttendanceCommentUnresolvedParticipant = {
+    key: string;
+    name: string;
+    reason: 'not_found' | 'ambiguous';
+};
+
 function buildParticipantKey(name: string, isCoTeacher: boolean): string {
     const kind = isCoTeacher ? 'co_teacher' : 'student';
     return `${kind}::${name.trim()}`;
@@ -339,6 +360,98 @@ function parseAttendanceSaveRequestBody(body: unknown): AttendanceSaveRequestPay
         classId,
         slotId,
         participants: Array.from(deduped.values())
+    };
+}
+
+function normalizeCommentText(value: unknown): string {
+    const normalized = String(value ?? '')
+        .replace(/\r\n/g, '\n')
+        .trim();
+
+    if (!normalized) {
+        return '';
+    }
+
+    return normalized.length > 5000
+        ? normalized.slice(0, 5000)
+        : normalized;
+}
+
+function parseAttendanceCommentRequestBody(body: unknown): AttendanceCommentRequestPayload | null {
+    if (!body || typeof body !== 'object') {
+        return null;
+    }
+
+    const payload = body as {
+        classId?: unknown;
+        slotId?: unknown;
+        comments?: unknown;
+    };
+    const classId = String(payload.classId ?? '').trim();
+    const slotId = String(payload.slotId ?? '').trim();
+    if (!classId || !slotId) {
+        return null;
+    }
+
+    if (!Array.isArray(payload.comments)) {
+        return {
+            classId,
+            slotId,
+            comments: []
+        };
+    }
+
+    const deduped = new Map<string, AttendanceCommentInput>();
+    payload.comments.forEach((rawItem) => {
+        if (!rawItem || typeof rawItem !== 'object') {
+            return;
+        }
+
+        const item = rawItem as {
+            key?: unknown;
+            name?: unknown;
+            studentId?: unknown;
+            comment?: unknown;
+        };
+        const name = String(item.name ?? '').trim();
+        if (!name) {
+            return;
+        }
+
+        const studentId = String(item.studentId ?? '').trim();
+        const keyFromBody = String(item.key ?? '').trim();
+        const key = keyFromBody || buildParticipantKey(name, false);
+
+        deduped.set(key, {
+            key,
+            name,
+            studentId: studentId || undefined,
+            comment: normalizeCommentText(item.comment)
+        });
+    });
+
+    return {
+        classId,
+        slotId,
+        comments: Array.from(deduped.values())
+    };
+}
+
+function parseClassSlotQuery(req: Request): { classId: string; slotId: string } | null {
+    const classId = typeof req.query.classId === 'string'
+        ? req.query.classId.trim()
+        : '';
+    const slotId = typeof req.query.slotId === 'string'
+        ? req.query.slotId.trim()
+        : '';
+
+    if (!classId || !slotId) {
+        return null;
+    }
+
+    return {
+        classId,
+        slotId
     };
 }
 
@@ -444,6 +557,23 @@ function collectStudentRecordKeys(student?: { fullName?: string; id?: string }):
     return Array.from(keys);
 }
 
+function buildStudentCommentKey(
+    student?: { id?: string; fullName?: string },
+    fallbackName?: string
+): string {
+    const studentId = String(student?.id ?? '').trim();
+    if (studentId) {
+        return `student_id::${studentId}`;
+    }
+
+    const name = String(student?.fullName ?? fallbackName ?? '').trim();
+    return buildParticipantKey(name, false);
+}
+
+function studentDisplayName(student?: { fullName?: string }, fallbackName?: string): string {
+    return String(student?.fullName ?? fallbackName ?? '').trim();
+}
+
 function addToLookupIndex<T>(index: Map<string, T[]>, key: string, value: T): void {
     if (!key) {
         return;
@@ -547,6 +677,13 @@ export function createClassRouter(lmsService: LmsService): Router {
                 .map((cls) => {
                     const students = collectStudentsForPrincipal(cls, principal);
                     const coTeachers = collectCoTeachers(cls, principal);
+                    const slotStartTimes = (cls.slots || [])
+                        .map((slot) => parseDateToMs(slot.startTime ?? slot.date))
+                        .filter((value): value is number => value !== null)
+                        .sort((a, b) => a - b);
+                    const classStartDate = slotStartTimes.length > 0
+                        ? new Date(slotStartTimes[0]).toISOString()
+                        : null;
                     const upcomingWindows = getClassAttendanceWindows(cls, nowMs, principal)
                         .filter((window) => window.attendanceCloseAtMs >= nowMs);
                     const nextAttendanceWindow = upcomingWindows.length > 0
@@ -560,6 +697,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                         className: cls.name,
                         status: normalizeClassStatus(cls.status) ?? null,
                         endDate: cls.endDate,
+                        classStartDate,
                         classEndDate: cls.endDate ?? null,
                         isClassEnded,
                         totalStudents: students.length,
@@ -664,6 +802,325 @@ export function createClassRouter(lmsService: LmsService): Router {
             res.status(statusCode).json({
                 success: false,
                 error: 'Loi ket noi API',
+                detail
+            });
+        }
+    });
+
+    router.get('/attendance/slot/comments', async (req: Request, res: Response) => {
+        try {
+            const idTokenFromHeader = parseBearerToken(req.headers.authorization);
+            if (!idTokenFromHeader) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Authorization header khong hop le',
+                    detail: 'Expected format: Bearer <id_token>'
+                });
+                return;
+            }
+
+            const query = parseClassSlotQuery(req);
+            if (!query) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Query khong hop le',
+                    detail: 'Can classId va slotId'
+                });
+                return;
+            }
+
+            const { classId, slotId } = query;
+            const cls = await lmsService.getClassByIdForAttendance(classId, idTokenFromHeader);
+            if (!cls) {
+                res.status(404).json({
+                    success: false,
+                    error: 'Khong tim thay lop hoc',
+                    detail: `classId=${classId}`
+                });
+                return;
+            }
+
+            const slot = (cls.slots || []).find((item) => normalizeIdentity(item._id) === normalizeIdentity(slotId));
+            if (!slot) {
+                res.status(404).json({
+                    success: false,
+                    error: 'Khong tim thay buoi hoc',
+                    detail: `classId=${classId}, slotId=${slotId}`
+                });
+                return;
+            }
+
+            const activeClassStudents = (cls.students || []).filter((item) => item.activeInClass !== false);
+            const slotStudentAttendance = slot.studentAttendance || [];
+            const studentAttendanceIndex = createLookupIndex(
+                slotStudentAttendance,
+                (record) => collectStudentRecordKeys(record.student)
+            );
+            const commentsByKey = new Map<string, {
+                key: string;
+                name: string;
+                studentId: string | null;
+                comment: string;
+            }>();
+
+            const upsertComment = (params: {
+                key: string;
+                name: string;
+                studentId?: string | null;
+                comment?: string | null;
+            }) => {
+                const key = String(params.key || '').trim();
+                const name = String(params.name || '').trim();
+                if (!key || !name) {
+                    return;
+                }
+
+                commentsByKey.set(key, {
+                    key,
+                    name,
+                    studentId: params.studentId?.trim() || null,
+                    comment: normalizeCommentText(params.comment)
+                });
+            };
+
+            activeClassStudents.forEach((classStudent: LmsClassStudent) => {
+                const student = classStudent.student;
+                const name = studentDisplayName(student);
+                if (!name) {
+                    return;
+                }
+
+                const lookupKeys = collectStudentRecordKeys(student);
+                const attendanceMatch = findSingleMatchByKeys(
+                    studentAttendanceIndex,
+                    lookupKeys,
+                    (record) =>
+                        record.student?.id
+                        || record._id
+                        || record.student?.fullName
+                        || ''
+                );
+                const attendance = attendanceMatch.item;
+
+                upsertComment({
+                    key: buildStudentCommentKey(student),
+                    name,
+                    studentId: student?.id ?? null,
+                    comment: attendance?.note ?? attendance?.comment ?? ''
+                });
+            });
+
+            slotStudentAttendance.forEach((attendance: LmsStudentAttendanceRecord) => {
+                const student = attendance.student;
+                const name = studentDisplayName(student);
+                if (!name) {
+                    return;
+                }
+
+                upsertComment({
+                    key: buildStudentCommentKey(student),
+                    name,
+                    studentId: student?.id ?? null,
+                    comment: attendance.note ?? attendance.comment ?? ''
+                });
+            });
+
+            const comments = Array.from(commentsByKey.values())
+                .sort((a, b) => a.name.localeCompare(b.name));
+
+            res.json({
+                success: true,
+                data: {
+                    classId,
+                    slotId,
+                    comments
+                }
+            });
+        } catch (error: any) {
+            const statusCode = error?.statusCode || error?.response?.status || 500;
+            const detail = error?.response?.data || error?.message;
+            console.error('Loi:', detail);
+            res.status(statusCode).json({
+                success: false,
+                error: 'Loi lay nhan xet',
+                detail
+            });
+        }
+    });
+
+    router.post('/attendance/slot/comments', async (req: Request, res: Response) => {
+        try {
+            const idTokenFromHeader = parseBearerToken(req.headers.authorization);
+            if (!idTokenFromHeader) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Authorization header khong hop le',
+                    detail: 'Expected format: Bearer <id_token>'
+                });
+                return;
+            }
+
+            const parsedBody = parseAttendanceCommentRequestBody(req.body);
+            if (!parsedBody) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Payload khong hop le',
+                    detail: 'Can classId, slotId va comments[]'
+                });
+                return;
+            }
+
+            const { classId, slotId, comments } = parsedBody;
+            if (comments.length === 0) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Khong co du lieu nhan xet',
+                    detail: 'comments[] dang rong'
+                });
+                return;
+            }
+
+            const cls = await lmsService.getClassByIdForAttendance(classId, idTokenFromHeader);
+            if (!cls) {
+                res.status(404).json({
+                    success: false,
+                    error: 'Khong tim thay lop hoc',
+                    detail: `classId=${classId}`
+                });
+                return;
+            }
+
+            const slot = (cls.slots || []).find((item) => normalizeIdentity(item._id) === normalizeIdentity(slotId));
+            if (!slot?._id) {
+                res.status(404).json({
+                    success: false,
+                    error: 'Khong tim thay buoi hoc',
+                    detail: `classId=${classId}, slotId=${slotId}`
+                });
+                return;
+            }
+
+            const activeClassStudents = (cls.students || []).filter((item) => item.activeInClass !== false);
+            const slotStudentAttendance = slot.studentAttendance || [];
+            const studentAttendanceIndex = createLookupIndex(
+                slotStudentAttendance,
+                (record) => collectStudentRecordKeys(record.student)
+            );
+            const classStudentIndex = createLookupIndex(
+                activeClassStudents,
+                (record) => collectStudentRecordKeys(record.student)
+            );
+            const studentPayloadMap = new Map<string, LmsStudentAttendancePayload>();
+            const unresolvedParticipants: AttendanceCommentUnresolvedParticipant[] = [];
+            const appliedParticipantKeys = new Set<string>();
+
+            comments.forEach((commentInput) => {
+                const lookupKeysSet = new Set<string>();
+                const studentIdIdentity = normalizeIdentity(commentInput.studentId);
+                if (studentIdIdentity) {
+                    lookupKeysSet.add(`id:${studentIdIdentity}`);
+                }
+
+                collectStudentMatchKeys(commentInput.name).forEach((key) => lookupKeysSet.add(key));
+                const lookupKeys = Array.from(lookupKeysSet);
+
+                const attendanceMatch = findSingleMatchByKeys(
+                    studentAttendanceIndex,
+                    lookupKeys,
+                    (record) =>
+                        record.student?.id
+                        || record._id
+                        || record.student?.fullName
+                        || ''
+                );
+
+                if (attendanceMatch.item) {
+                    const attendance = attendanceMatch.item;
+                    const payload: LmsStudentAttendancePayload = {
+                        _id: attendance._id,
+                        student: attendance.student?.id,
+                        status: attendance.status,
+                        note: commentInput.comment
+                    };
+                    const dedupeKey = normalizeIdentity(attendance._id)
+                        || ['student', normalizeIdentity(attendance.student?.id)].join(':');
+                    if (payload._id || payload.student) {
+                        studentPayloadMap.set(dedupeKey, payload);
+                        appliedParticipantKeys.add(commentInput.key);
+                        return;
+                    }
+                }
+
+                const classStudentMatch = findSingleMatchByKeys(
+                    classStudentIndex,
+                    lookupKeys,
+                    (record) =>
+                        record.student?.id
+                        || record._id
+                        || record.student?.fullName
+                        || ''
+                );
+
+                if (classStudentMatch.item?.student?.id) {
+                    const payload: LmsStudentAttendancePayload = {
+                        student: classStudentMatch.item.student.id,
+                        note: commentInput.comment
+                    };
+                    const dedupeKey = ['student', normalizeIdentity(payload.student)].join(':');
+                    studentPayloadMap.set(dedupeKey, payload);
+                    appliedParticipantKeys.add(commentInput.key);
+                    return;
+                }
+
+                unresolvedParticipants.push({
+                    key: commentInput.key,
+                    name: commentInput.name,
+                    reason: attendanceMatch.reason === 'ambiguous' || classStudentMatch.reason === 'ambiguous'
+                        ? 'ambiguous'
+                        : 'not_found'
+                });
+            });
+
+            const command: LmsSlotAttendanceCommand = {
+                classId,
+                slotId,
+                studentAttendance: Array.from(studentPayloadMap.values())
+            };
+
+            const totalApplied = (command.studentAttendance || []).length;
+            if (totalApplied === 0) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Khong map duoc hoc vien de luu nhan xet',
+                    detail: {
+                        requestedComments: comments.length,
+                        unresolvedParticipants
+                    }
+                });
+                return;
+            }
+
+            await lmsService.updateSlotAttendance(command, idTokenFromHeader);
+
+            res.json({
+                success: true,
+                data: {
+                    classId,
+                    slotId,
+                    requestedComments: comments.length,
+                    appliedComments: totalApplied,
+                    updatedStudents: totalApplied,
+                    appliedParticipantKeys: Array.from(appliedParticipantKeys.values()),
+                    unresolvedParticipants
+                }
+            });
+        } catch (error: any) {
+            const statusCode = error?.statusCode || error?.response?.status || 500;
+            const detail = error?.response?.data || error?.message;
+            console.error('Loi:', detail);
+            res.status(statusCode).json({
+                success: false,
+                error: 'Loi luu nhan xet',
                 detail
             });
         }
