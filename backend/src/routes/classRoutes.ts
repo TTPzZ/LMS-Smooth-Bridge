@@ -10,7 +10,15 @@ import {
     toPublicAttendanceWindow
 } from '../services/attendanceWindowService';
 import { parseBearerToken, parseBooleanQuery, parseIntegerQuery, sanitizePositiveInt } from '../utils/requestParsers';
-import { LmsClassRecord, LmsTeacherAssignment, LmsTeacherAttendanceRecord } from '../types/lms';
+import {
+    LmsClassRecord,
+    LmsSlotAttendanceCommand,
+    LmsSlotAttendanceStatus,
+    LmsStudentAttendancePayload,
+    LmsTeacherAssignment,
+    LmsTeacherAttendancePayload,
+    LmsTeacherAttendanceRecord
+} from '../types/lms';
 import { decodeJwtPayload } from '../utils/jwt';
 
 function collectStudentsForPrincipal(
@@ -227,6 +235,284 @@ function readPrincipal(req: Request, idTokenFromHeader: string | null | undefine
     };
 }
 
+const SLOT_ATTENDANCE_STATUSES: LmsSlotAttendanceStatus[] = [
+    'ATTENDED',
+    'LATE_ARRIVED',
+    'ABSENT_WITH_NOTICE',
+    'ABSENT'
+];
+const SLOT_ATTENDANCE_STATUS_SET = new Set<string>(SLOT_ATTENDANCE_STATUSES);
+
+type AttendanceSaveParticipantInput = {
+    key: string;
+    name: string;
+    isCoTeacher: boolean;
+    status: LmsSlotAttendanceStatus;
+};
+
+type AttendanceSaveRequestPayload = {
+    classId: string;
+    slotId: string;
+    participants: AttendanceSaveParticipantInput[];
+};
+
+type AttendanceSaveUnresolvedParticipant = {
+    key: string;
+    name: string;
+    isCoTeacher: boolean;
+    reason: 'not_found' | 'ambiguous';
+};
+
+function buildParticipantKey(name: string, isCoTeacher: boolean): string {
+    const kind = isCoTeacher ? 'co_teacher' : 'student';
+    return `${kind}::${name.trim()}`;
+}
+
+function parseSlotAttendanceStatus(value: unknown): LmsSlotAttendanceStatus | null {
+    const normalized = String(value ?? '').trim().toUpperCase();
+    if (!normalized || !SLOT_ATTENDANCE_STATUS_SET.has(normalized)) {
+        return null;
+    }
+
+    return normalized as LmsSlotAttendanceStatus;
+}
+
+function parseAttendanceSaveRequestBody(body: unknown): AttendanceSaveRequestPayload | null {
+    if (!body || typeof body !== 'object') {
+        return null;
+    }
+
+    const payload = body as {
+        classId?: unknown;
+        slotId?: unknown;
+        participants?: unknown;
+    };
+    const classId = String(payload.classId ?? '').trim();
+    const slotId = String(payload.slotId ?? '').trim();
+    if (!classId || !slotId) {
+        return null;
+    }
+
+    if (!Array.isArray(payload.participants)) {
+        return {
+            classId,
+            slotId,
+            participants: []
+        };
+    }
+
+    const deduped = new Map<string, AttendanceSaveParticipantInput>();
+    payload.participants.forEach((rawItem) => {
+        if (!rawItem || typeof rawItem !== 'object') {
+            return;
+        }
+
+        const item = rawItem as {
+            key?: unknown;
+            name?: unknown;
+            isCoTeacher?: unknown;
+            status?: unknown;
+        };
+        const name = String(item.name ?? '').trim();
+        if (!name) {
+            return;
+        }
+
+        const status = parseSlotAttendanceStatus(item.status);
+        if (!status) {
+            return;
+        }
+
+        const isCoTeacher = item.isCoTeacher === true;
+        const keyFromBody = String(item.key ?? '').trim();
+        const key = keyFromBody || buildParticipantKey(name, isCoTeacher);
+
+        deduped.set(key, {
+            key,
+            name,
+            isCoTeacher,
+            status
+        });
+    });
+
+    return {
+        classId,
+        slotId,
+        participants: Array.from(deduped.values())
+    };
+}
+
+function parseTeacherDisplayName(
+    value: string
+): { displayName: string; fullNamePart: string; usernameHint: string } {
+    const displayName = String(value ?? '').trim();
+    if (!displayName) {
+        return {
+            displayName: '',
+            fullNamePart: '',
+            usernameHint: ''
+        };
+    }
+
+    const match = /^(.*?)\s*\(([^()]+)\)\s*$/.exec(displayName);
+    if (!match) {
+        return {
+            displayName,
+            fullNamePart: displayName,
+            usernameHint: ''
+        };
+    }
+
+    return {
+        displayName,
+        fullNamePart: String(match[1] ?? '').trim(),
+        usernameHint: String(match[2] ?? '').trim()
+    };
+}
+
+function collectTeacherMatchKeys(inputName: string): string[] {
+    const parsed = parseTeacherDisplayName(inputName);
+    const keys = new Set<string>();
+
+    const pushRaw = (value: string) => {
+        const normalizedIdentity = normalizeIdentity(value);
+        if (normalizedIdentity) {
+            keys.add(`id:${normalizedIdentity}`);
+        }
+
+        const normalizedComparable = normalizeComparable(value);
+        if (normalizedComparable) {
+            keys.add(`cmp:${normalizedComparable}`);
+        }
+    };
+
+    pushRaw(parsed.displayName);
+    pushRaw(parsed.fullNamePart);
+    pushRaw(parsed.usernameHint);
+
+    return Array.from(keys);
+}
+
+function collectTeacherRecordKeys(teacher?: { fullName?: string; username?: string; id?: string }): string[] {
+    const keys = new Set<string>();
+    const pushRaw = (value: string | null | undefined) => {
+        const normalizedIdentity = normalizeIdentity(value);
+        if (normalizedIdentity) {
+            keys.add(`id:${normalizedIdentity}`);
+        }
+
+        const normalizedComparable = normalizeComparable(value);
+        if (normalizedComparable) {
+            keys.add(`cmp:${normalizedComparable}`);
+        }
+    };
+
+    pushRaw(teacher?.fullName);
+    pushRaw(teacher?.username);
+    pushRaw(teacher?.id);
+
+    return Array.from(keys);
+}
+
+function collectStudentMatchKeys(inputName: string): string[] {
+    const keys = new Set<string>();
+    const normalizedIdentity = normalizeIdentity(inputName);
+    if (normalizedIdentity) {
+        keys.add(`id:${normalizedIdentity}`);
+    }
+    const normalizedComparable = normalizeComparable(inputName);
+    if (normalizedComparable) {
+        keys.add(`cmp:${normalizedComparable}`);
+    }
+    return Array.from(keys);
+}
+
+function collectStudentRecordKeys(student?: { fullName?: string; id?: string }): string[] {
+    const keys = new Set<string>();
+    const fullNameIdentity = normalizeIdentity(student?.fullName);
+    if (fullNameIdentity) {
+        keys.add(`id:${fullNameIdentity}`);
+    }
+    const fullNameComparable = normalizeComparable(student?.fullName);
+    if (fullNameComparable) {
+        keys.add(`cmp:${fullNameComparable}`);
+    }
+    const studentIdIdentity = normalizeIdentity(student?.id);
+    if (studentIdIdentity) {
+        keys.add(`id:${studentIdIdentity}`);
+    }
+    return Array.from(keys);
+}
+
+function addToLookupIndex<T>(index: Map<string, T[]>, key: string, value: T): void {
+    if (!key) {
+        return;
+    }
+
+    const current = index.get(key);
+    if (!current) {
+        index.set(key, [value]);
+        return;
+    }
+
+    current.push(value);
+}
+
+function createLookupIndex<T>(
+    records: T[],
+    keyBuilder: (record: T) => string[]
+): Map<string, T[]> {
+    const index = new Map<string, T[]>();
+    records.forEach((record) => {
+        keyBuilder(record).forEach((key) => {
+            addToLookupIndex(index, key, record);
+        });
+    });
+    return index;
+}
+
+function findSingleMatchByKeys<T>(
+    index: Map<string, T[]>,
+    keys: string[],
+    stableIdBuilder: (record: T) => string
+): { item: T | null; reason?: 'not_found' | 'ambiguous' } {
+    const matched = new Map<string, T>();
+    let fallbackCounter = 0;
+
+    keys.forEach((key) => {
+        const bucket = index.get(key);
+        if (!bucket || bucket.length === 0) {
+            return;
+        }
+
+        bucket.forEach((record) => {
+            const stable = normalizeIdentity(stableIdBuilder(record));
+            const finalStable = stable || `fallback_${fallbackCounter += 1}`;
+            if (!matched.has(finalStable)) {
+                matched.set(finalStable, record);
+            }
+        });
+    });
+
+    if (matched.size === 1) {
+        return {
+            item: Array.from(matched.values())[0]
+        };
+    }
+
+    if (matched.size > 1) {
+        return {
+            item: null,
+            reason: 'ambiguous'
+        };
+    }
+
+    return {
+        item: null,
+        reason: 'not_found'
+    };
+}
+
 export function createClassRouter(lmsService: LmsService): Router {
     const router = Router();
 
@@ -378,6 +664,282 @@ export function createClassRouter(lmsService: LmsService): Router {
             res.status(statusCode).json({
                 success: false,
                 error: 'Loi ket noi API',
+                detail
+            });
+        }
+    });
+
+    router.post('/attendance/slot', async (req: Request, res: Response) => {
+        try {
+            const idTokenFromHeader = parseBearerToken(req.headers.authorization);
+            if (!idTokenFromHeader) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Authorization header khong hop le',
+                    detail: 'Expected format: Bearer <id_token>'
+                });
+                return;
+            }
+
+            const parsedBody = parseAttendanceSaveRequestBody(req.body);
+            if (!parsedBody) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Payload khong hop le',
+                    detail: 'Can classId, slotId va participants[]'
+                });
+                return;
+            }
+
+            const { classId, slotId, participants } = parsedBody;
+            if (participants.length === 0) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Khong co du lieu diem danh',
+                    detail: 'participants[] dang rong hoac khong co trang thai hop le'
+                });
+                return;
+            }
+
+            const cls = await lmsService.getClassByIdForAttendance(classId, idTokenFromHeader);
+            if (!cls) {
+                res.status(404).json({
+                    success: false,
+                    error: 'Khong tim thay lop hoc',
+                    detail: `classId=${classId}`
+                });
+                return;
+            }
+
+            const slot = (cls.slots || []).find((item) => normalizeIdentity(item._id) === normalizeIdentity(slotId));
+            if (!slot?._id) {
+                res.status(404).json({
+                    success: false,
+                    error: 'Khong tim thay buoi hoc',
+                    detail: `classId=${classId}, slotId=${slotId}`
+                });
+                return;
+            }
+
+            const activeClassStudents = (cls.students || []).filter((item) => item.activeInClass !== false);
+            const slotStudentAttendance = slot.studentAttendance || [];
+            const slotTeacherAttendance = slot.teacherAttendance || [];
+
+            const teacherAssignmentMap = new Map<string, LmsTeacherAssignment>();
+            [...(cls.teachers || []), ...(slot.teachers || [])].forEach((assignment) => {
+                if (assignment.isActive === false) {
+                    return;
+                }
+                const teacherId = normalizeIdentity(assignment.teacher?.id);
+                const teacherUsername = normalizeIdentity(assignment.teacher?.username);
+                const classSiteId = normalizeIdentity(assignment.classSiteId);
+                const stableKey = [teacherId, teacherUsername, classSiteId].filter(Boolean).join('::');
+                if (!stableKey) {
+                    return;
+                }
+
+                if (!teacherAssignmentMap.has(stableKey)) {
+                    teacherAssignmentMap.set(stableKey, assignment);
+                }
+            });
+            const teacherAssignments = Array.from(teacherAssignmentMap.values());
+
+            const studentAttendanceIndex = createLookupIndex(
+                slotStudentAttendance,
+                (record) => collectStudentRecordKeys(record.student)
+            );
+            const classStudentIndex = createLookupIndex(
+                activeClassStudents,
+                (record) => collectStudentRecordKeys(record.student)
+            );
+            const teacherAttendanceIndex = createLookupIndex(
+                slotTeacherAttendance,
+                (record) => collectTeacherRecordKeys(record.teacher)
+            );
+            const teacherAssignmentIndex = createLookupIndex(
+                teacherAssignments,
+                (record) => collectTeacherRecordKeys(record.teacher)
+            );
+
+            const studentPayloadMap = new Map<string, LmsStudentAttendancePayload>();
+            const teacherPayloadMap = new Map<string, LmsTeacherAttendancePayload>();
+            const unresolvedParticipants: AttendanceSaveUnresolvedParticipant[] = [];
+            const appliedParticipantKeys = new Set<string>();
+
+            participants.forEach((participant) => {
+                if (participant.isCoTeacher) {
+                    const lookupKeys = collectTeacherMatchKeys(participant.name);
+                    const attendanceMatch = findSingleMatchByKeys(
+                        teacherAttendanceIndex,
+                        lookupKeys,
+                        (record) =>
+                            record.teacher?.id
+                            || record._id
+                            || record.teacher?.username
+                            || record.teacher?.fullName
+                            || ''
+                    );
+
+                    if (attendanceMatch.item) {
+                        const attendance = attendanceMatch.item;
+                        const payload: LmsTeacherAttendancePayload = {
+                            _id: attendance._id,
+                            teacher: attendance.teacher?.id,
+                            status: participant.status,
+                            note: attendance.note ?? undefined,
+                            classSiteId: attendance.classSiteId ?? undefined
+                        };
+                        const dedupeKey = normalizeIdentity(attendance._id)
+                            || [
+                                'teacher',
+                                normalizeIdentity(attendance.teacher?.id),
+                                normalizeIdentity(attendance.classSiteId)
+                            ].join(':');
+                        if (payload._id || payload.teacher) {
+                            teacherPayloadMap.set(dedupeKey, payload);
+                            appliedParticipantKeys.add(participant.key);
+                            return;
+                        }
+                    }
+
+                    const assignmentMatch = findSingleMatchByKeys(
+                        teacherAssignmentIndex,
+                        lookupKeys,
+                        (record) =>
+                            record.teacher?.id
+                            || record._id
+                            || record.teacher?.username
+                            || record.teacher?.fullName
+                            || ''
+                    );
+                    const assignmentTeacherId = assignmentMatch.item?.teacher?.id;
+                    if (assignmentTeacherId) {
+                        const assignment = assignmentMatch.item;
+                        const payload: LmsTeacherAttendancePayload = {
+                            teacher: assignmentTeacherId,
+                            status: participant.status,
+                            classSiteId: assignment?.classSiteId ?? undefined
+                        };
+                        const dedupeKey = [
+                            'teacher',
+                            normalizeIdentity(payload.teacher),
+                            normalizeIdentity(payload.classSiteId)
+                        ].join(':');
+                        teacherPayloadMap.set(dedupeKey, payload);
+                        appliedParticipantKeys.add(participant.key);
+                        return;
+                    }
+
+                    unresolvedParticipants.push({
+                        key: participant.key,
+                        name: participant.name,
+                        isCoTeacher: true,
+                        reason: attendanceMatch.reason === 'ambiguous' || assignmentMatch.reason === 'ambiguous'
+                            ? 'ambiguous'
+                            : 'not_found'
+                    });
+                    return;
+                }
+
+                const lookupKeys = collectStudentMatchKeys(participant.name);
+                const attendanceMatch = findSingleMatchByKeys(
+                    studentAttendanceIndex,
+                    lookupKeys,
+                    (record) =>
+                        record.student?.id
+                        || record._id
+                        || record.student?.fullName
+                        || ''
+                );
+                if (attendanceMatch.item) {
+                    const attendance = attendanceMatch.item;
+                    const payload: LmsStudentAttendancePayload = {
+                        _id: attendance._id,
+                        student: attendance.student?.id,
+                        status: participant.status,
+                        note: attendance.note ?? attendance.comment ?? undefined
+                    };
+                    const dedupeKey = normalizeIdentity(attendance._id)
+                        || ['student', normalizeIdentity(attendance.student?.id)].join(':');
+                    if (payload._id || payload.student) {
+                        studentPayloadMap.set(dedupeKey, payload);
+                        appliedParticipantKeys.add(participant.key);
+                        return;
+                    }
+                }
+
+                const classStudentMatch = findSingleMatchByKeys(
+                    classStudentIndex,
+                    lookupKeys,
+                    (record) =>
+                        record.student?.id
+                        || record._id
+                        || record.student?.fullName
+                        || ''
+                );
+                if (classStudentMatch.item?.student?.id) {
+                    const payload: LmsStudentAttendancePayload = {
+                        student: classStudentMatch.item.student.id,
+                        status: participant.status
+                    };
+                    const dedupeKey = ['student', normalizeIdentity(payload.student)].join(':');
+                    studentPayloadMap.set(dedupeKey, payload);
+                    appliedParticipantKeys.add(participant.key);
+                    return;
+                }
+
+                unresolvedParticipants.push({
+                    key: participant.key,
+                    name: participant.name,
+                    isCoTeacher: false,
+                    reason: attendanceMatch.reason === 'ambiguous' || classStudentMatch.reason === 'ambiguous'
+                        ? 'ambiguous'
+                        : 'not_found'
+                });
+            });
+
+            const command: LmsSlotAttendanceCommand = {
+                classId,
+                slotId,
+                studentAttendance: Array.from(studentPayloadMap.values()),
+                teacherAttendance: Array.from(teacherPayloadMap.values())
+            };
+
+            const totalApplied = (command.studentAttendance || []).length + (command.teacherAttendance || []).length;
+            if (totalApplied === 0) {
+                res.status(400).json({
+                    success: false,
+                    error: 'Khong map duoc nguoi diem danh',
+                    detail: {
+                        requestedParticipants: participants.length,
+                        unresolvedParticipants
+                    }
+                });
+                return;
+            }
+
+            await lmsService.updateSlotAttendance(command, idTokenFromHeader);
+
+            res.json({
+                success: true,
+                data: {
+                    classId,
+                    slotId,
+                    requestedParticipants: participants.length,
+                    appliedParticipants: totalApplied,
+                    updatedStudents: (command.studentAttendance || []).length,
+                    updatedTeachers: (command.teacherAttendance || []).length,
+                    appliedParticipantKeys: Array.from(appliedParticipantKeys.values()),
+                    unresolvedParticipants
+                }
+            });
+        } catch (error: any) {
+            const statusCode = error?.statusCode || error?.response?.status || 500;
+            const detail = error?.response?.data || error?.message;
+            console.error('Loi:', detail);
+            res.status(statusCode).json({
+                success: false,
+                error: 'Loi luu diem danh',
                 detail
             });
         }

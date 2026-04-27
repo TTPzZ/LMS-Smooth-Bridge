@@ -197,6 +197,91 @@ class ReminderItem {
   }
 }
 
+class AttendanceSaveParticipant {
+  final String key;
+  final String name;
+  final bool isCoTeacher;
+  final String status;
+
+  AttendanceSaveParticipant({
+    required this.key,
+    required this.name,
+    required this.isCoTeacher,
+    required this.status,
+  });
+
+  Map<String, dynamic> toJson() {
+    return {
+      'key': key,
+      'name': name,
+      'isCoTeacher': isCoTeacher,
+      'status': status,
+    };
+  }
+}
+
+class AttendanceUnresolvedParticipant {
+  final String key;
+  final String name;
+  final bool isCoTeacher;
+  final String reason;
+
+  AttendanceUnresolvedParticipant({
+    required this.key,
+    required this.name,
+    required this.isCoTeacher,
+    required this.reason,
+  });
+
+  factory AttendanceUnresolvedParticipant.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    return AttendanceUnresolvedParticipant(
+      key: (json['key'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      isCoTeacher: _asBool(json['isCoTeacher']),
+      reason: (json['reason'] ?? '').toString(),
+    );
+  }
+}
+
+class AttendanceSaveResult {
+  final String classId;
+  final String slotId;
+  final int requestedParticipants;
+  final int appliedParticipants;
+  final int updatedStudents;
+  final int updatedTeachers;
+  final List<String> appliedParticipantKeys;
+  final List<AttendanceUnresolvedParticipant> unresolvedParticipants;
+
+  AttendanceSaveResult({
+    required this.classId,
+    required this.slotId,
+    required this.requestedParticipants,
+    required this.appliedParticipants,
+    required this.updatedStudents,
+    required this.updatedTeachers,
+    required this.appliedParticipantKeys,
+    required this.unresolvedParticipants,
+  });
+
+  factory AttendanceSaveResult.fromJson(Map<String, dynamic> json) {
+    return AttendanceSaveResult(
+      classId: (json['classId'] ?? '').toString(),
+      slotId: (json['slotId'] ?? '').toString(),
+      requestedParticipants: _asInt(json['requestedParticipants']),
+      appliedParticipants: _asInt(json['appliedParticipants']),
+      updatedStudents: _asInt(json['updatedStudents']),
+      updatedTeachers: _asInt(json['updatedTeachers']),
+      appliedParticipantKeys: _asStringList(json['appliedParticipantKeys']),
+      unresolvedParticipants: _asMapList(
+        json['unresolvedParticipants'],
+      ).map(AttendanceUnresolvedParticipant.fromJson).toList(),
+    );
+  }
+}
+
 class PayrollRoleSummary {
   final String role;
   final int slotCount;
@@ -527,4 +612,10 @@ List<String> _asStringList(dynamic value) {
     return value.map((item) => item.toString()).toList();
   }
   return const [];
+}
+
+bool _asBool(dynamic value) {
+  if (value is bool) return value;
+  final raw = value?.toString().trim().toLowerCase();
+  return raw == 'true' || raw == '1' || raw == 'yes';
 }

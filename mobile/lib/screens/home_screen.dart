@@ -78,6 +78,7 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<String, Map<String, _AttendanceUiStatus>>
       _attendanceSavedSnapshotByClassId = {};
   final Map<String, DateTime> _attendanceSavedAtByClassId = {};
+  final Map<String, bool> _attendanceSavingByClassId = {};
 
   @override
   void initState() {
@@ -746,30 +747,132 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _saveAttendanceForClass({
+  String _attendanceApiStatus(_AttendanceUiStatus status) {
+    switch (status) {
+      case _AttendanceUiStatus.present:
+        return 'ATTENDED';
+      case _AttendanceUiStatus.late:
+        return 'LATE_ARRIVED';
+      case _AttendanceUiStatus.excusedAbsent:
+        return 'ABSENT_WITH_NOTICE';
+      case _AttendanceUiStatus.unexcusedAbsent:
+        return 'ABSENT';
+    }
+  }
+
+  Future<void> _saveAttendanceForClass({
     required String classId,
+    required String slotId,
     required List<_AttendanceParticipant> participants,
-  }) {
+  }) async {
+    if (_attendanceSavingByClassId[classId] == true) {
+      return;
+    }
+    if (slotId.trim().isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Khong tim thay slot sap toi de luu diem danh.'),
+        ),
+      );
+      return;
+    }
+
     final snapshot = _buildAttendanceSnapshotForClass(
       classId: classId,
       participants: participants,
     );
+    final participantByKey = <String, _AttendanceParticipant>{};
+    for (final item in participants) {
+      participantByKey[item.key] = item;
+    }
 
-    setState(() {
-      _attendanceSavedSnapshotByClassId[classId] = snapshot;
-      _attendanceSavedAtByClassId[classId] = DateTime.now();
+    final selectedParticipants = <AttendanceSaveParticipant>[];
+    snapshot.forEach((participantKey, status) {
+      final participant = participantByKey[participantKey];
+      if (participant == null) {
+        return;
+      }
+
+      selectedParticipants.add(
+        AttendanceSaveParticipant(
+          key: participant.key,
+          name: participant.name,
+          isCoTeacher: participant.isCoTeacher,
+          status: _attendanceApiStatus(status),
+        ),
+      );
     });
 
-    if (!mounted) {
+    if (selectedParticipants.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Chua co ai duoc chon trang thai de luu diem danh.'),
+        ),
+      );
       return;
     }
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content:
-            Text('Đã lưu ${snapshot.length} kết quả điểm danh cho lớp này.'),
-      ),
-    );
+    setState(() {
+      _attendanceSavingByClassId[classId] = true;
+    });
+
+    try {
+      final result = await _api.saveSlotAttendance(
+        classId: classId,
+        slotId: slotId,
+        participants: selectedParticipants,
+      );
+
+      final appliedKeySet = result.appliedParticipantKeys.toSet();
+      final savedSnapshot = Map<String, _AttendanceUiStatus>.from(snapshot);
+      if (appliedKeySet.isNotEmpty) {
+        savedSnapshot.removeWhere((key, _) => !appliedKeySet.contains(key));
+      }
+
+      setState(() {
+        _attendanceSavedSnapshotByClassId[classId] = savedSnapshot;
+        _attendanceSavedAtByClassId[classId] = DateTime.now();
+      });
+
+      if (!mounted) {
+        return;
+      }
+
+      final unresolvedCount = result.unresolvedParticipants.length;
+      final savedCount = result.appliedParticipants;
+      final saveMessage = unresolvedCount > 0
+          ? 'Da luu $savedCount ket qua, con $unresolvedCount nguoi chua map duoc.'
+          : 'Da luu $savedCount ket qua diem danh cho lop nay.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(saveMessage),
+          backgroundColor:
+              unresolvedCount > 0 ? Colors.orange.shade700 : Colors.green[700],
+        ),
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Luu diem danh that bai: $error'),
+          backgroundColor: Colors.red.shade700,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _attendanceSavingByClassId[classId] = false;
+        });
+      }
+    }
   }
 
   Widget _buildUserHeader() {
@@ -1173,6 +1276,11 @@ class _HomeScreenState extends State<HomeScreen> {
                 participants: participants,
               );
               final savedAt = _attendanceSavedAtByClassId[cls.classId];
+              final isSavingAttendance =
+                  _attendanceSavingByClassId[cls.classId] == true;
+              final saveSlotId = (nextReminder?.slotId.isNotEmpty == true)
+                  ? nextReminder!.slotId
+                  : (cls.nextAttendanceWindow?.slotId ?? '');
 
               return Card(
                 child: Padding(
@@ -1417,15 +1525,28 @@ class _HomeScreenState extends State<HomeScreen> {
                                   SizedBox(
                                     width: double.infinity,
                                     child: FilledButton.icon(
-                                      onPressed: participants.isEmpty
+                                      onPressed: participants.isEmpty ||
+                                              isSavingAttendance
                                           ? null
                                           : () => _saveAttendanceForClass(
                                                 classId: cls.classId,
+                                                slotId: saveSlotId,
                                                 participants: participants,
                                               ),
-                                      icon: const Icon(Icons.save_rounded),
-                                      label:
-                                          const Text('Lưu kết quả điểm danh'),
+                                      icon: isSavingAttendance
+                                          ? const SizedBox(
+                                              width: 18,
+                                              height: 18,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                              ),
+                                            )
+                                          : const Icon(Icons.save_rounded),
+                                      label: Text(
+                                        isSavingAttendance
+                                            ? 'Dang luu diem danh...'
+                                            : 'Luu ket qua diem danh',
+                                      ),
                                     ),
                                   ),
                                   if (savedAt != null) ...[

@@ -1,6 +1,11 @@
 import axios from 'axios';
 import { env } from '../config/env';
-import { LmsClassRecord, LmsTeacherProfile, LmsTimesheetItem } from '../types/lms';
+import {
+    LmsClassRecord,
+    LmsSlotAttendanceCommand,
+    LmsTeacherProfile,
+    LmsTimesheetItem
+} from '../types/lms';
 import { AuthTokenService } from './authTokenService';
 
 class LmsGraphqlError extends Error {
@@ -577,6 +582,164 @@ export class LmsService {
         }
 
         return classes as LmsClassRecord[];
+    }
+
+    async getClassByIdForAttendance(
+        classId: string,
+        idTokenOverride?: string
+    ): Promise<LmsClassRecord | null> {
+        const normalizedClassId = String(classId ?? '').trim();
+        if (!normalizedClassId) {
+            return null;
+        }
+
+        const graphqlQuery = {
+            operationName: 'GetClassByIdForAttendance',
+            query: `query GetClassByIdForAttendance($payload: ClassQuery) {
+              classes(payload: $payload) {
+                data {
+                  id
+                  name
+                  status
+                  endDate
+                  classSites {
+                    _id
+                    name
+                  }
+                  students {
+                    _id
+                    activeInClass
+                    classSite {
+                      _id
+                      name
+                    }
+                    student {
+                      id
+                      fullName
+                    }
+                  }
+                  teachers {
+                    _id
+                    isActive
+                    classSiteId
+                    teacher {
+                      id
+                      username
+                      fullName
+                    }
+                    role {
+                      id
+                      name
+                      shortName
+                    }
+                  }
+                  slots {
+                    _id
+                    index
+                    date
+                    startTime
+                    endTime
+                    teachers {
+                      _id
+                      isActive
+                      classSiteId
+                      teacher {
+                        id
+                        username
+                        fullName
+                      }
+                      role {
+                        id
+                        name
+                        shortName
+                      }
+                    }
+                    studentAttendance {
+                      _id
+                      status
+                      comment
+                      student {
+                        id
+                        fullName
+                      }
+                    }
+                    teacherAttendance {
+                      _id
+                      status
+                      note
+                      classSiteId
+                      teacher {
+                        id
+                        username
+                        fullName
+                      }
+                    }
+                  }
+                }
+              }
+            }`,
+            variables: {
+                payload: {
+                    id_in: [normalizedClassId],
+                    pageIndex: 0,
+                    itemsPerPage: 1
+                }
+            }
+        };
+
+        const responseData = await this.callLmsGraphqlWithAutoRefresh<{
+            data?: {
+                classes?: {
+                    data?: LmsClassRecord[];
+                };
+            };
+        }>(graphqlQuery, idTokenOverride);
+
+        const classes = responseData?.data?.classes?.data;
+        if (!Array.isArray(classes) || classes.length === 0) {
+            return null;
+        }
+
+        const matched = classes.find((item) => item?.id === normalizedClassId);
+        return matched || classes[0] || null;
+    }
+
+    async updateSlotAttendance(
+        payload: LmsSlotAttendanceCommand,
+        idTokenOverride?: string
+    ): Promise<{ classId: string }> {
+        const graphqlMutation = {
+            operationName: 'UpdateSlotAttendance',
+            query: `mutation UpdateSlotAttendance($payload: SlotAttendanceCommand!) {
+              classes {
+                updateSlotAttendance(payload: $payload) {
+                  id
+                }
+              }
+            }`,
+            variables: {
+                payload
+            }
+        };
+
+        const responseData = await this.callLmsGraphqlWithAutoRefresh<{
+            data?: {
+                classes?: {
+                    updateSlotAttendance?: {
+                        id?: string;
+                    } | null;
+                };
+            };
+        }>(graphqlMutation, idTokenOverride);
+
+        const updatedClassId = responseData?.data?.classes?.updateSlotAttendance?.id;
+        if (!updatedClassId) {
+            throw new Error('Khong nhan duoc phan hoi updateSlotAttendance hop le');
+        }
+
+        return {
+            classId: updatedClassId
+        };
     }
 
     async fetchUniqueClasses(

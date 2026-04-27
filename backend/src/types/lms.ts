@@ -39,6 +39,7 @@ export type LmsTeacherRole = {
 export type LmsTeacherAssignment = {
     _id?: string;
     isActive?: boolean;
+    classSiteId?: string;
     teacher?: LmsTeacherUser;
     role?: LmsTeacherRole;
 };
@@ -47,13 +48,28 @@ export type LmsTeacherAttendanceRecord = {
     _id?: string;
     status?: string;
     note?: string | null;
+    classSiteId?: string;
     teacher?: LmsTeacherUser;
 };
 
 export type LmsStudentAttendanceRecord = {
     _id?: string;
     status?: string;
+    note?: string | null;
+    comment?: string | null;
     student?: LmsStudent;
+};
+
+export type LmsClassSite = {
+    _id?: string;
+    name?: string;
+};
+
+export type LmsClassStudent = {
+    _id?: string;
+    student?: LmsStudent;
+    classSite?: LmsClassSite;
+    activeInClass?: boolean;
 };
 
 export type LmsSlotRecord = {
@@ -73,7 +89,38 @@ export type LmsClassRecord = {
     status?: string;
     endDate?: string;
     teachers?: LmsTeacherAssignment[];
+    students?: LmsClassStudent[];
+    classSites?: LmsClassSite[];
     slots?: LmsSlotRecord[];
+};
+
+export type LmsSlotAttendanceStatus =
+    | 'ATTENDED'
+    | 'LATE_ARRIVED'
+    | 'ABSENT_WITH_NOTICE'
+    | 'ABSENT';
+
+export type LmsStudentAttendancePayload = {
+    _id?: string;
+    student?: string;
+    status?: string;
+    note?: string | null;
+};
+
+export type LmsTeacherAttendancePayload = {
+    _id?: string;
+    teacher?: string;
+    status?: string;
+    note?: string | null;
+    classSiteId?: string;
+};
+
+export type LmsSlotAttendanceCommand = {
+    classId: string;
+    slotId: string;
+    classSiteId?: string;
+    studentAttendance?: LmsStudentAttendancePayload[];
+    teacherAttendance?: LmsTeacherAttendancePayload[];
 };
 
 export type LmsTimesheetClass = {
