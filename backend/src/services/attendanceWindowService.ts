@@ -1,5 +1,5 @@
 import { env } from '../config/env';
-import { LmsClassRecord, LmsSlotRecord, LmsTeacherAssignment } from '../types/lms';
+import { LmsClassRecord, LmsSlotRecord, LmsTeacherAssignment, LmsTeacherUser } from '../types/lms';
 
 type ReminderPrincipal = {
     teacherId?: string | null;
@@ -75,19 +75,20 @@ function deriveUsernameFromEmail(value: string | null | undefined): string {
     return raw.substring(0, at);
 }
 
-function resolveRoleForPrincipal(
-    cls: LmsClassRecord,
-    slot: LmsSlotRecord,
-    principal?: ReminderPrincipal | null
-): { roleName: string | null; roleShortName: string | null } {
-    const assignments = (slot.teachers || []).length > 0 ? slot.teachers || [] : cls.teachers || [];
-    if (assignments.length === 0) {
-        return {
-            roleName: null,
-            roleShortName: null
-        };
-    }
+function hasPrincipalIdentity(principal?: ReminderPrincipal | null): boolean {
+    const hasTeacherId = Boolean(normalizeIdentity(principal?.teacherId));
+    const hasUsernames = (principal?.usernames || [])
+        .map((item) => normalizeIdentity(item))
+        .filter(Boolean).length > 0;
+    const hasUsername = Boolean(normalizeIdentity(principal?.username));
+    const hasFullName = Boolean(normalizeComparable(principal?.fullName));
+    return hasTeacherId || hasUsernames || hasUsername || hasFullName;
+}
 
+function matchesPrincipalUser(
+    teacher: LmsTeacherUser | null | undefined,
+    principal?: ReminderPrincipal | null
+): boolean {
     const principalTeacherId = normalizeIdentity(principal?.teacherId);
     const principalUsernames = new Set(
         (principal?.usernames || [principal?.username || ''])
@@ -100,36 +101,82 @@ function resolveRoleForPrincipal(
             .filter(Boolean)
     );
     const principalComparableFullName = normalizeComparable(principal?.fullName);
-    const hasPrincipalIdentity = Boolean(
-        principalTeacherId
-        || principalUsernames.size > 0
-        || principalComparableFullName
+
+    const teacherId = normalizeIdentity(teacher?.id);
+    const teacherUsername = normalizeIdentity(teacher?.username);
+    const teacherComparableFullName = normalizeComparable(teacher?.fullName);
+
+    if (principalTeacherId && teacherId && principalTeacherId === teacherId) {
+        return true;
+    }
+    if (teacherUsername && principalUsernames.has(teacherUsername)) {
+        return true;
+    }
+    if (teacherUsername && principalDerivedUsernames.has(teacherUsername)) {
+        return true;
+    }
+    if (
+        principalComparableFullName
+        && teacherComparableFullName
+        && principalComparableFullName === teacherComparableFullName
+    ) {
+        return true;
+    }
+    return false;
+}
+
+function findMatchedAssignment(
+    assignments: LmsTeacherAssignment[] | undefined,
+    principal?: ReminderPrincipal | null
+): LmsTeacherAssignment | undefined {
+    return (assignments || []).find((assignment) =>
+        matchesPrincipalUser(assignment.teacher, principal)
+    );
+}
+
+export function shouldIncludeSlotForPrincipal(
+    cls: LmsClassRecord,
+    slot: LmsSlotRecord,
+    principal?: ReminderPrincipal | null
+): boolean {
+    if (!hasPrincipalIdentity(principal)) {
+        return true;
+    }
+
+    const slotAssignments = slot.teachers || [];
+    const slotAttendance = slot.teacherAttendance || [];
+    const hasSlotTeacherSignals = slotAssignments.length > 0 || slotAttendance.length > 0;
+
+    const matchedSlotAssignment = findMatchedAssignment(slotAssignments, principal);
+    const matchedAttendance = slotAttendance.some((record) =>
+        matchesPrincipalUser(record.teacher, principal)
     );
 
-    const isMatch = (assignment: LmsTeacherAssignment): boolean => {
-        const teacherId = normalizeIdentity(assignment.teacher?.id);
-        const teacherUsername = normalizeIdentity(assignment.teacher?.username);
-        const teacherComparableFullName = normalizeComparable(assignment.teacher?.fullName);
-        if (principalTeacherId && teacherId && principalTeacherId === teacherId) {
-            return true;
-        }
-        if (teacherUsername && principalUsernames.has(teacherUsername)) {
-            return true;
-        }
-        if (teacherUsername && principalDerivedUsernames.has(teacherUsername)) {
-            return true;
-        }
-        if (
-            principalComparableFullName
-            && teacherComparableFullName
-            && principalComparableFullName === teacherComparableFullName
-        ) {
-            return true;
-        }
-        return false;
-    };
+    if (hasSlotTeacherSignals) {
+        return Boolean(matchedSlotAssignment || matchedAttendance);
+    }
 
-    const matched = assignments.find(isMatch);
+    const matchedClassAssignment = findMatchedAssignment(cls.teachers, principal);
+    return Boolean(matchedClassAssignment);
+}
+
+function resolveRoleForPrincipal(
+    cls: LmsClassRecord,
+    slot: LmsSlotRecord,
+    principal?: ReminderPrincipal | null
+): { roleName: string | null; roleShortName: string | null } {
+    const slotAssignments = slot.teachers || [];
+    const classAssignments = cls.teachers || [];
+    const assignments = slotAssignments.length > 0 ? slotAssignments : classAssignments;
+    if (assignments.length === 0 && classAssignments.length === 0) {
+        return {
+            roleName: null,
+            roleShortName: null
+        };
+    }
+
+    const matched = findMatchedAssignment(slotAssignments, principal)
+        || findMatchedAssignment(classAssignments, principal);
     if (matched) {
         return {
             roleName: matched.role?.name || null,
@@ -137,7 +184,7 @@ function resolveRoleForPrincipal(
         };
     }
 
-    if (hasPrincipalIdentity) {
+    if (hasPrincipalIdentity(principal)) {
         return {
             roleName: null,
             roleShortName: null
@@ -187,6 +234,10 @@ function buildSlotAttendanceWindow(
     const startMs = parseDateToMs(slot.startTime);
     const endMs = parseDateToMs(slot.endTime);
     if (startMs === null || endMs === null) {
+        return null;
+    }
+
+    if (!shouldIncludeSlotForPrincipal(cls, slot, principal)) {
         return null;
     }
 

@@ -6,16 +6,23 @@ import {
     isRunningClass,
     normalizeClassStatus,
     parseDateToMs,
+    shouldIncludeSlotForPrincipal,
     toPublicAttendanceWindow
 } from '../services/attendanceWindowService';
 import { parseBearerToken, parseBooleanQuery, parseIntegerQuery, sanitizePositiveInt } from '../utils/requestParsers';
 import { LmsClassRecord, LmsTeacherAssignment, LmsTeacherAttendanceRecord } from '../types/lms';
 import { decodeJwtPayload } from '../utils/jwt';
 
-function collectStudents(cls: LmsClassRecord): string[] {
+function collectStudentsForPrincipal(
+    cls: LmsClassRecord,
+    principal?: ReminderPrincipal | null
+): string[] {
     const studentMap = new Map<string, string>();
 
     (cls.slots || []).forEach((slot) => {
+        if (!shouldIncludeSlotForPrincipal(cls, slot, principal)) {
+            return;
+        }
         (slot.studentAttendance || []).forEach((attendance) => {
             const student = attendance.student;
             if (student?.id && student.fullName) {
@@ -107,10 +114,19 @@ function collectCoTeachers(
     principal?: ReminderPrincipal | null
 ): string[] {
     const coTeacherMap = new Map<string, string>();
-    const assignments: LmsTeacherAssignment[] = [
-        ...(cls.teachers || []),
-        ...((cls.slots || []).flatMap((slot) => slot.teachers || []))
-    ];
+    const scopedSlots = (cls.slots || []).filter((slot) =>
+        shouldIncludeSlotForPrincipal(cls, slot, principal)
+    );
+    const hasScopedSlots = scopedSlots.length > 0;
+
+    const assignments: LmsTeacherAssignment[] = hasScopedSlots
+        ? [
+            ...(scopedSlots.flatMap((slot) => slot.teachers || []))
+        ]
+        : [
+            ...(cls.teachers || []),
+            ...((cls.slots || []).flatMap((slot) => slot.teachers || []))
+        ];
 
     const pushCoTeacher = (assignment: LmsTeacherAssignment) => {
         if (assignment.isActive === false) {
@@ -145,7 +161,8 @@ function collectCoTeachers(
 
     assignments.forEach(pushCoTeacher);
 
-    (cls.slots || []).forEach((slot) => {
+    const attendanceSlots = hasScopedSlots ? scopedSlots : (cls.slots || []);
+    attendanceSlots.forEach((slot) => {
         (slot.teacherAttendance || []).forEach((attendance: LmsTeacherAttendanceRecord) => {
             pushCoTeacher({
                 isActive: true,
@@ -223,7 +240,7 @@ export function createClassRouter(lmsService: LmsService): Router {
             const cleanClasses = classes
                 .filter((cls) => (activeOnly ? isRunningClass(cls, now) : true))
                 .map((cls) => {
-                    const students = collectStudents(cls);
+                    const students = collectStudentsForPrincipal(cls, principal);
                     const coTeachers = collectCoTeachers(cls, principal);
                     const upcomingWindows = getClassAttendanceWindows(cls, nowMs, principal)
                         .filter((window) => window.attendanceCloseAtMs >= nowMs);
