@@ -1,15 +1,11 @@
 class AppConfig {
   static const String apiBaseUrl = 'https://lms-smooth-bridge.vercel.app/api';
 
-  // Hardcoded key for your app build.
-  static const String embeddedFirebaseApiKey =
-      'AIzaSyAh2Au-mk5ci-hN83RUBqj1fsAmCMdvJx4';
-
-  // Optional override when running with:
+  // Provide at runtime/build time with:
   // --dart-define=FIREBASE_API_KEY=...
   static const String firebaseApiKey = String.fromEnvironment(
     'FIREBASE_API_KEY',
-    defaultValue: embeddedFirebaseApiKey,
+    defaultValue: '',
   );
 
   static bool get hasFirebaseApiKey {

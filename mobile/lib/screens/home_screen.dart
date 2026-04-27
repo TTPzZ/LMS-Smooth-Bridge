@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import '../models/api_models.dart';
@@ -7,6 +10,7 @@ import '../models/auth_models.dart';
 import '../services/auth_session_manager.dart';
 import '../services/backend_api_service.dart';
 import '../services/dashboard_cache_service.dart';
+import '../services/local_notification_service.dart';
 import '../theme/app_theme.dart';
 
 String _formatDurationMinutesVi(
@@ -30,13 +34,13 @@ String _formatDurationMinutesVi(
 
   final parts = <String>[];
   if (days > 0) {
-    parts.add('$days ngÃƒÆ’Ã‚Â y');
+    parts.add('$days ngày');
   }
   if (hours > 0) {
-    parts.add('$hours giÃƒÂ¡Ã‚Â»Ã‚Â');
+    parts.add('$hours giờ');
   }
   if (mins > 0 || parts.isEmpty) {
-    parts.add('$mins phÃƒÆ’Ã‚Âºt');
+    parts.add('$mins phút');
   }
   return parts.join(' ');
 }
@@ -44,11 +48,13 @@ String _formatDurationMinutesVi(
 class HomeScreen extends StatefulWidget {
   final AuthSessionManager sessionManager;
   final Future<void> Function() onSignOut;
+  final bool showPendingCommentReminderOnLogin;
 
   const HomeScreen({
     super.key,
     required this.sessionManager,
     required this.onSignOut,
+    this.showPendingCommentReminderOnLogin = false,
   });
 
   @override
@@ -59,11 +65,15 @@ class _HomeScreenState extends State<HomeScreen> {
   static const Duration _classesCacheTtl = Duration(minutes: 20);
   static const Duration _remindersCacheTtl = Duration(minutes: 8);
   static const Duration _payrollCacheTtl = Duration(minutes: 20);
+  static const Duration _tabSwitchDuration = Duration(milliseconds: 240);
+  static const String _pullHintHiddenPrefix = 'home.pull_hint_hidden_v1';
 
   late BackendApiService _api;
   final DashboardCacheService _dashboardCache = DashboardCacheService();
   late final TextEditingController _hourlyRateController;
   late final TextEditingController _manualAdjustmentController;
+  late final PageController _pageController;
+  Timer? _payrollInputDebounce;
 
   late Future<List<ClassSummary>> _classesFuture;
   late Future<List<ReminderItem>> _remindersFuture;
@@ -97,6 +107,16 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<String, String?> _studentCommentErrorByClassId = {};
   final Map<String, String?> _previousStudentCommentErrorByClassId = {};
   final Set<String> _previousCommentWarningShown = {};
+  bool _isPullActionsSheetOpen = false;
+  bool _isShowingPullHint = false;
+  bool _isShowingPendingCommentNotice = false;
+  bool _didCheckPendingCommentReminder = false;
+  final Map<String, GlobalKey> _classCardKeyByClassId = {};
+  String? _pendingRevealClassId;
+  int _pendingRevealAttempts = 0;
+  List<ClassSummary>? _cachedClassesSource;
+  List<ReminderItem>? _cachedRemindersSource;
+  _ClassesPageComputed? _cachedClassesPageComputed;
 
   @override
   void initState() {
@@ -112,15 +132,21 @@ class _HomeScreenState extends State<HomeScreen> {
     _selectedPayrollYear = now.year;
     _hourlyRateController = TextEditingController(text: '150000');
     _manualAdjustmentController = TextEditingController(text: '0');
+    _pageController = PageController(initialPage: _selectedIndex);
     _api = BackendApiService(
       baseUrl: AppConfig.apiBaseUrl.trim(),
       idTokenProvider: _provideIdToken,
     );
     _setFutures(forceNetwork: false);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_runPostLoginNotices());
+    });
   }
 
   @override
   void dispose() {
+    _payrollInputDebounce?.cancel();
+    _pageController.dispose();
     _hourlyRateController.dispose();
     _manualAdjustmentController.dispose();
     super.dispose();
@@ -156,8 +182,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text(
-                'PhiÃƒÆ’Ã‚Âªn Ãƒâ€žÃ¢â‚¬ËœÃƒâ€žÃ†â€™ng nhÃƒÂ¡Ã‚ÂºÃ‚Â­p Ãƒâ€žÃ¢â‚¬ËœÃƒÆ’Ã‚Â£ hÃƒÂ¡Ã‚ÂºÃ‚Â¿t hÃƒÂ¡Ã‚ÂºÃ‚Â¡n. Vui lÃƒÆ’Ã‚Â²ng Ãƒâ€žÃ¢â‚¬ËœÃƒâ€žÃ†â€™ng nhÃƒÂ¡Ã‚ÂºÃ‚Â­p lÃƒÂ¡Ã‚ÂºÃ‚Â¡i.')),
+            content:
+                Text('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.')),
       );
     }
 
@@ -260,6 +286,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _setFutures({required bool forceNetwork}) {
+    _clearClassesPageComputedCache();
     final username = _session.username.trim().toLowerCase();
     setState(() {
       _classesFuture = _loadClasses(
@@ -317,6 +344,541 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  void _onPayrollPeriodChanged({
+    int? month,
+    int? year,
+  }) {
+    final nextMonth = month ?? _selectedPayrollMonth;
+    final nextYear = year ?? _selectedPayrollYear;
+    if (nextMonth == _selectedPayrollMonth &&
+        nextYear == _selectedPayrollYear) {
+      return;
+    }
+    final username = _session.username.trim().toLowerCase();
+    setState(() {
+      _selectedPayrollMonth = nextMonth;
+      _selectedPayrollYear = nextYear;
+      _payrollFuture = _loadPayroll(
+        username: username,
+        month: _selectedPayrollMonth,
+        year: _selectedPayrollYear,
+        forceNetwork: false,
+      );
+    });
+  }
+
+  Future<void> _showPullActionsSheet({required int tabIndex}) async {
+    if (_isPullActionsSheetOpen || !mounted) {
+      return;
+    }
+
+    _isPullActionsSheetOpen = true;
+    _PullQuickAction? action;
+    try {
+      action = await showModalBottomSheet<_PullQuickAction>(
+        context: context,
+        backgroundColor: Colors.transparent,
+        barrierColor: Colors.black.withValues(alpha: 0.22),
+        builder: (sheetContext) {
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [
+                      Color(0xFF0C2548),
+                      Color(0xFF1A4D93),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(22),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x3D0A1B35),
+                      blurRadius: 26,
+                      offset: Offset(0, 10),
+                    ),
+                  ],
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Tác vụ nhanh',
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Vuốt xuống từ đầu trang để mở bảng này.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.white.withValues(alpha: 0.84),
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                      const SizedBox(height: 12),
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final reloadAction = _PullActionButton(
+                            icon: Icons.refresh_rounded,
+                            title: 'Tải lại',
+                            subtitle: tabIndex == 2
+                                ? 'Làm mới thu nhập'
+                                : 'Làm mới dữ liệu',
+                            accent: const Color(0xFF2B8CFF),
+                            onPressed: () => Navigator.of(sheetContext).pop(
+                              _PullQuickAction.reload,
+                            ),
+                          );
+                          final signOutAction = _PullActionButton(
+                            icon: Icons.logout_rounded,
+                            title: 'Đăng xuất',
+                            subtitle: 'Thoát phiên hiện tại',
+                            accent: const Color(0xFFFF6B57),
+                            onPressed: () => Navigator.of(sheetContext).pop(
+                              _PullQuickAction.signOut,
+                            ),
+                          );
+
+                          if (constraints.maxWidth >= 460) {
+                            return Row(
+                              children: [
+                                Expanded(child: reloadAction),
+                                const SizedBox(width: 10),
+                                Expanded(child: signOutAction),
+                              ],
+                            );
+                          }
+
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              reloadAction,
+                              const SizedBox(height: 10),
+                              signOutAction,
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    } finally {
+      _isPullActionsSheetOpen = false;
+    }
+
+    if (!mounted || action == null) {
+      return;
+    }
+
+    switch (action) {
+      case _PullQuickAction.reload:
+        if (tabIndex == 2) {
+          await _forceRefreshPayroll();
+        } else {
+          await _forceRefreshAll();
+        }
+        break;
+      case _PullQuickAction.signOut:
+        await widget.onSignOut();
+        break;
+    }
+  }
+
+  String _pullHintAccountScope() {
+    final username = _session.username.trim().toLowerCase();
+    if (username.isNotEmpty) {
+      return username;
+    }
+
+    final email = _session.email.trim().toLowerCase();
+    if (email.isNotEmpty) {
+      return email;
+    }
+    return 'default';
+  }
+
+  String _pullHintHiddenKey() {
+    return '$_pullHintHiddenPrefix.${_pullHintAccountScope()}';
+  }
+
+  Future<bool> _isPullHintHiddenForCurrentAccount() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_pullHintHiddenKey()) ?? false;
+  }
+
+  Future<void> _setPullHintHiddenForCurrentAccount(bool hidden) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (hidden) {
+      await prefs.setBool(_pullHintHiddenKey(), true);
+      return;
+    }
+    await prefs.remove(_pullHintHiddenKey());
+  }
+
+  Future<void> _maybeShowPullHintOnLogin() async {
+    if (!mounted || _isShowingPullHint) {
+      return;
+    }
+
+    final isHidden = await _isPullHintHiddenForCurrentAccount();
+    if (!mounted || isHidden) {
+      return;
+    }
+
+    _isShowingPullHint = true;
+    bool doNotShowAgain = false;
+    bool didTriggerPullSheet = false;
+    double accumulatedDragDown = 0;
+
+    try {
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) {
+          return StatefulBuilder(
+            builder: (statefulContext, setDialogState) {
+              return GestureDetector(
+                onVerticalDragUpdate: (details) {
+                  final deltaY = details.primaryDelta ?? details.delta.dy;
+                  if (deltaY <= 0) {
+                    return;
+                  }
+                  accumulatedDragDown += deltaY;
+                  if (accumulatedDragDown < 40 || didTriggerPullSheet) {
+                    return;
+                  }
+                  didTriggerPullSheet = true;
+                  Navigator.of(dialogContext).pop();
+                  unawaited(
+                    Future<void>.delayed(
+                      const Duration(milliseconds: 80),
+                      () async {
+                        if (!mounted) {
+                          return;
+                        }
+                        await _showPullActionsSheet(tabIndex: _selectedIndex);
+                      },
+                    ),
+                  );
+                },
+                onVerticalDragEnd: (_) {
+                  accumulatedDragDown = 0;
+                },
+                child: AlertDialog(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  titlePadding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+                  contentPadding: const EdgeInsets.fromLTRB(20, 12, 20, 14),
+                  title: Row(
+                    children: [
+                      Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              Color(0xFF1457B8),
+                              Color(0xFF07A5A5),
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(11),
+                        ),
+                        child: const Icon(
+                          Icons.touch_app_rounded,
+                          color: Colors.white,
+                          size: 21,
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Mẹo thao tác nhanh',
+                          style: Theme.of(statefulContext)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Bạn có thể kéo từ trên xuống ở bất kỳ tab nào để mở nhanh 2 tùy chọn: Tải lại hoặc Đăng xuất.',
+                        style: Theme.of(statefulContext).textTheme.bodyMedium,
+                      ),
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 8,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF3F8FF),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.swipe_down_alt_rounded,
+                              size: 18,
+                              color: Colors.blue.shade700,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Kéo xuống để đóng bảng này và mở tác vụ nhanh',
+                                style: Theme.of(statefulContext)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: Colors.blue.shade700,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      CheckboxListTile(
+                        value: doNotShowAgain,
+                        onChanged: (value) {
+                          setDialogState(() {
+                            doNotShowAgain = value ?? false;
+                          });
+                        },
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: Text(
+                          'Không hiển thị lại',
+                          style: Theme.of(statefulContext).textTheme.bodyMedium,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      _isShowingPullHint = false;
+    }
+
+    if (doNotShowAgain) {
+      await _setPullHintHiddenForCurrentAccount(true);
+    }
+  }
+
+  Future<void> _runPostLoginNotices() async {
+    await _maybeShowPullHintOnLogin();
+    await _maybeShowPendingCommentReminderOnLogin();
+  }
+
+  Future<void> _maybeShowPendingCommentReminderOnLogin() async {
+    if (!mounted ||
+        !widget.showPendingCommentReminderOnLogin ||
+        _didCheckPendingCommentReminder ||
+        _isShowingPendingCommentNotice) {
+      return;
+    }
+
+    _didCheckPendingCommentReminder = true;
+
+    List<ClassSummary> classes;
+    try {
+      classes = await _classesFuture.timeout(const Duration(seconds: 20));
+    } catch (_) {
+      return;
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    final pendingClasses = classes
+        .where(
+          (cls) =>
+              (cls.previousCommentContext?.missingCommentStudentCount ?? 0) > 0,
+        )
+        .toList()
+      ..sort((a, b) {
+        final aCount =
+            a.previousCommentContext?.missingCommentStudentCount ?? 0;
+        final bCount =
+            b.previousCommentContext?.missingCommentStudentCount ?? 0;
+        if (aCount != bCount) {
+          return bCount.compareTo(aCount);
+        }
+        return a.className.compareTo(b.className);
+      });
+
+    if (pendingClasses.isEmpty) {
+      return;
+    }
+
+    final totalMissingComments = pendingClasses.fold<int>(
+      0,
+      (sum, cls) =>
+          sum + (cls.previousCommentContext?.missingCommentStudentCount ?? 0),
+    );
+    unawaited(
+      LocalNotificationService.instance.showPendingCommentReminder(
+        classCount: pendingClasses.length,
+        missingCommentCount: totalMissingComments,
+        classNames: pendingClasses.map((item) => item.className).toList(),
+      ),
+    );
+
+    _isShowingPendingCommentNotice = true;
+    bool shouldOpenClassTab = false;
+    try {
+      shouldOpenClassTab = await showDialog<bool>(
+            context: context,
+            barrierDismissible: true,
+            builder: (dialogContext) {
+              final topClasses = pendingClasses.take(4).toList(growable: false);
+              final remaining = pendingClasses.length - topClasses.length;
+              return AlertDialog(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                titlePadding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+                contentPadding: const EdgeInsets.fromLTRB(20, 12, 20, 8),
+                actionsPadding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                title: Row(
+                  children: [
+                    Container(
+                      width: 38,
+                      height: 38,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF3E8),
+                        borderRadius: BorderRadius.circular(11),
+                      ),
+                      child: Icon(
+                        Icons.notifications_active_rounded,
+                        color: Colors.orange.shade800,
+                        size: 22,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Nhắc nhận xét học viên',
+                        style: Theme.of(dialogContext)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                    ),
+                  ],
+                ),
+                content: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Bạn có ${pendingClasses.length} lớp còn thiếu nhận xét tuần trước.',
+                      style: Theme.of(dialogContext).textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 10),
+                    ...topClasses.map((cls) {
+                      final commentContext = cls.previousCommentContext;
+                      final count =
+                          commentContext?.missingCommentStudentCount ?? 0;
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Padding(
+                              padding: EdgeInsets.only(top: 2),
+                              child: Icon(
+                                Icons.circle,
+                                size: 8,
+                                color: Color(0xFF1F4D8F),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                '${cls.className}: thiếu $count nhận xét',
+                                style: Theme.of(dialogContext)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
+                    if (remaining > 0)
+                      Text(
+                        '...và thêm $remaining lớp khác.',
+                        style: Theme.of(dialogContext)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: Colors.blueGrey.shade700,
+                            ),
+                      ),
+                  ],
+                ),
+                actions: [
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(false),
+                    child: const Text('Để sau'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(true),
+                    child: const Text('Xem lớp'),
+                  ),
+                ],
+              );
+            },
+          ) ??
+          false;
+    } finally {
+      _isShowingPendingCommentNotice = false;
+    }
+
+    if (!mounted || !shouldOpenClassTab) {
+      return;
+    }
+
+    _onDestinationSelected(1);
+  }
+
   List<int> _availablePayrollYears() {
     final current = DateTime.now().year;
     return [
@@ -344,6 +906,271 @@ class _HomeScreenState extends State<HomeScreen> {
     final normalized = raw.replaceAll(RegExp(r'[^0-9.]'), '');
     final value = double.tryParse(normalized) ?? 0;
     return isNegative ? -value : value;
+  }
+
+  void _onPayrollInputChanged() {
+    _payrollInputDebounce?.cancel();
+    _payrollInputDebounce = Timer(const Duration(milliseconds: 180), () {
+      if (!mounted) {
+        return;
+      }
+      setState(() {});
+    });
+  }
+
+  void _clearClassesPageComputedCache() {
+    _cachedClassesSource = null;
+    _cachedRemindersSource = null;
+    _cachedClassesPageComputed = null;
+  }
+
+  void _onDestinationSelected(int index) {
+    if (index == _selectedIndex) {
+      return;
+    }
+
+    setState(() {
+      _selectedIndex = index;
+    });
+
+    if (!_pageController.hasClients) {
+      return;
+    }
+    _pageController.animateToPage(
+      index,
+      duration: _tabSwitchDuration,
+      curve: Curves.easeOutCubic,
+    );
+    if (index == 1) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _tryRevealPendingClassCard();
+      });
+    }
+  }
+
+  void _onTabPageChanged(int index) {
+    if (index == _selectedIndex) {
+      return;
+    }
+    setState(() {
+      _selectedIndex = index;
+    });
+    if (index == 1) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _tryRevealPendingClassCard();
+      });
+    }
+  }
+
+  GlobalKey _classCardKeyFor(String classId) {
+    return _classCardKeyByClassId.putIfAbsent(
+      classId,
+      () => GlobalKey(debugLabel: 'class_card_$classId'),
+    );
+  }
+
+  void _scheduleRevealClassCard(String classId) {
+    _pendingRevealClassId = classId;
+    _pendingRevealAttempts = 0;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _tryRevealPendingClassCard();
+    });
+  }
+
+  void _tryRevealPendingClassCard() {
+    if (!mounted || _selectedIndex != 1) {
+      return;
+    }
+
+    final classId = _pendingRevealClassId;
+    if (classId == null || classId.isEmpty) {
+      return;
+    }
+
+    final key = _classCardKeyByClassId[classId];
+    final cardContext = key?.currentContext;
+    if (cardContext == null) {
+      if (_pendingRevealAttempts >= 24) {
+        _pendingRevealClassId = null;
+        _pendingRevealAttempts = 0;
+        return;
+      }
+      _pendingRevealAttempts += 1;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _tryRevealPendingClassCard();
+      });
+      return;
+    }
+
+    _pendingRevealClassId = null;
+    _pendingRevealAttempts = 0;
+    unawaited(
+      Scrollable.ensureVisible(
+        cardContext,
+        alignment: 0.02,
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutCubic,
+      ),
+    );
+  }
+
+  void _jumpToClassCommentFromOverview(ClassSummary cls) {
+    final classId = cls.classId.trim();
+    if (classId.isEmpty) {
+      return;
+    }
+
+    final nextSlotId = cls.nextAttendanceWindow?.slotId ?? '';
+    final previousSlotId = cls.previousCommentContext?.slotId ?? '';
+    final studentNames = cls.students;
+
+    setState(() {
+      _classSectionByClassId[classId] = _ClassCardSection.note;
+    });
+    _scheduleRevealClassCard(classId);
+    if (_selectedIndex != 1) {
+      _onDestinationSelected(1);
+    } else {
+      _tryRevealPendingClassCard();
+    }
+
+    unawaited(
+      _loadStudentCommentsForClass(
+        classId: classId,
+        slotId: nextSlotId,
+        studentNames: studentNames,
+      ),
+    );
+    unawaited(
+      _loadPreviousStudentCommentsForClass(
+        classId: classId,
+        slotId: previousSlotId,
+      ),
+    );
+  }
+
+  _ClassParticipantsBundle _buildParticipantsForClass(ClassSummary cls) {
+    final participants = <_AttendanceParticipant>[];
+    final participantSeen = <String>{};
+
+    void addParticipants(
+      List<String> names, {
+      required bool isCoTeacher,
+    }) {
+      for (final rawName in names) {
+        final name = rawName.trim();
+        if (name.isEmpty) {
+          continue;
+        }
+        final participantKey = _attendanceParticipantKey(
+          name: name,
+          isCoTeacher: isCoTeacher,
+        );
+        if (!participantSeen.add(participantKey)) {
+          continue;
+        }
+        participants.add(
+          _AttendanceParticipant(
+            key: participantKey,
+            name: name,
+            isCoTeacher: isCoTeacher,
+          ),
+        );
+      }
+    }
+
+    addParticipants(cls.students, isCoTeacher: false);
+    addParticipants(cls.coTeachers, isCoTeacher: true);
+    final studentNames = cls.students
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty)
+        .toList(growable: false);
+    return _ClassParticipantsBundle(
+      participants: List.unmodifiable(participants),
+      studentNames: List.unmodifiable(studentNames),
+    );
+  }
+
+  _ClassesPageComputed _computeClassesPageData({
+    required List<ClassSummary> classesSource,
+    required List<ReminderItem> remindersSource,
+  }) {
+    if (identical(_cachedClassesSource, classesSource) &&
+        identical(_cachedRemindersSource, remindersSource) &&
+        _cachedClassesPageComputed != null) {
+      return _cachedClassesPageComputed!;
+    }
+
+    final classes = List<ClassSummary>.from(classesSource)
+      ..sort((a, b) => a.className.compareTo(b.className));
+    final remindersByClassId = <String, List<ReminderItem>>{};
+    for (final reminder in remindersSource) {
+      remindersByClassId.putIfAbsent(reminder.classId, () => []).add(reminder);
+    }
+    for (final classReminders in remindersByClassId.values) {
+      classReminders.sort((a, b) {
+        final startDiff =
+            _sortTimeMs(a.slotStartTime) - _sortTimeMs(b.slotStartTime);
+        if (startDiff != 0) {
+          return startDiff;
+        }
+        final endDiff = _sortTimeMs(a.slotEndTime) - _sortTimeMs(b.slotEndTime);
+        if (endDiff != 0) {
+          return endDiff;
+        }
+        return a.className.compareTo(b.className);
+      });
+    }
+
+    final nextReminderByClassId = <String, ReminderItem?>{};
+    for (final cls in classes) {
+      final classReminders = remindersByClassId[cls.classId];
+      nextReminderByClassId[cls.classId] =
+          (classReminders != null && classReminders.isNotEmpty)
+              ? classReminders.first
+              : null;
+    }
+
+    String? nextStartTimeForClass(ClassSummary cls) {
+      final nextReminder = nextReminderByClassId[cls.classId];
+      if (nextReminder != null) {
+        return nextReminder.slotStartTime;
+      }
+      return cls.nextAttendanceWindow?.slotStartTime;
+    }
+
+    classes.sort((a, b) {
+      final aNextStart = nextStartTimeForClass(a);
+      final bNextStart = nextStartTimeForClass(b);
+      final aHasNext = aNextStart != null && aNextStart.trim().isNotEmpty;
+      final bHasNext = bNextStart != null && bNextStart.trim().isNotEmpty;
+
+      if (aHasNext && bHasNext) {
+        final diff = _sortTimeMs(aNextStart) - _sortTimeMs(bNextStart);
+        if (diff != 0) {
+          return diff;
+        }
+      }
+      if (aHasNext != bHasNext) {
+        return aHasNext ? -1 : 1;
+      }
+      return a.className.compareTo(b.className);
+    });
+
+    final participantsByClassId = <String, _ClassParticipantsBundle>{};
+    for (final cls in classes) {
+      participantsByClassId[cls.classId] = _buildParticipantsForClass(cls);
+    }
+
+    final computed = _ClassesPageComputed(
+      classes: List.unmodifiable(classes),
+      nextReminderByClassId: Map.unmodifiable(nextReminderByClassId),
+      participantsByClassId: Map.unmodifiable(participantsByClassId),
+    );
+    _cachedClassesSource = classesSource;
+    _cachedRemindersSource = remindersSource;
+    _cachedClassesPageComputed = computed;
+    return computed;
   }
 
   String _normalizeRole(String rawRole) {
@@ -688,7 +1515,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _fallbackStudentComments(studentNames);
         _studentCommentSlotByClassId.remove(classId);
         _studentCommentErrorByClassId[classId] =
-            'Chua co slot sap toi de lay nhan xet.';
+            'Chưa có slot sắp tới để lấy nhận xét.';
       });
       return;
     }
@@ -734,7 +1561,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _studentCommentDraftByClassId[classId] ??
                 _fallbackStudentComments(studentNames);
         _studentCommentErrorByClassId[classId] =
-            'Khong tai duoc nhan xet: $error';
+            'Không tải được nhận xét: $error';
       });
     } finally {
       if (mounted) {
@@ -805,7 +1632,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Tuan truoc con $missingCount hoc vien chua nhan xet.',
+              'Tuần trước còn $missingCount học viên chưa nhận xét.',
             ),
           ),
         );
@@ -816,7 +1643,7 @@ class _HomeScreenState extends State<HomeScreen> {
             _previousStudentCommentDraftByClassId[classId] ??
                 const <_StudentCommentDraft>[];
         _previousStudentCommentErrorByClassId[classId] =
-            'Khong tai duoc nhan xet buoi truoc: $error';
+            'Không tải được nhận xét buổi trước: $error';
       });
     } finally {
       if (mounted) {
@@ -840,11 +1667,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (missingNames.length <= 3) {
-      return 'Tuan truoc con ${missingNames.length} hoc vien chua nhan xet: ${missingNames.join(', ')}.';
+      return 'Tuần trước còn ${missingNames.length} học viên chưa nhận xét: ${missingNames.join(', ')}.';
     }
 
     final head = missingNames.take(3).join(', ');
-    return 'Tuan truoc con ${missingNames.length} hoc vien chua nhan xet: $head va ${missingNames.length - 3} hoc vien khac.';
+    return 'Tuần trước còn ${missingNames.length} học viên chưa nhận xét: $head và ${missingNames.length - 3} học viên khác.';
   }
 
   void _updatePreviousStudentCommentDraft({
@@ -881,7 +1708,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Chua co slot tuan truoc de luu nhan xet.'),
+          content: Text('Chưa có slot tuần trước để lưu nhận xét.'),
         ),
       );
       return;
@@ -917,8 +1744,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final unresolved = result.unresolvedParticipants.length;
       final message = unresolved > 0
-          ? 'Luu nhan xet tuan truoc cho ${draft.name} chua thanh cong ($unresolved loi map).'
-          : 'Da luu nhan xet tuan truoc cho ${draft.name}.';
+          ? 'Lưu nhận xét tuần trước cho ${draft.name} chưa thành công ($unresolved lỗi map).'
+          : 'Đã lưu nhận xét tuần trước cho ${draft.name}.';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
       );
@@ -936,7 +1763,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _previousStudentCommentErrorByClassId[classId] = error.toString();
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Luu nhan xet tuan truoc that bai: $error')),
+        SnackBar(content: Text('Lưu nhận xét tuần trước thất bại: $error')),
       );
     } finally {
       if (mounted) {
@@ -984,7 +1811,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Chua co slot sap toi de luu nhan xet.'),
+          content: Text('Chưa có slot sắp tới để lưu nhận xét.'),
         ),
       );
       return;
@@ -1020,8 +1847,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
       final unresolved = result.unresolvedParticipants.length;
       final message = unresolved > 0
-          ? 'Luu nhan xet cho ${draft.name} chua thanh cong ($unresolved loi map).'
-          : 'Da luu nhan xet cho ${draft.name} len LMS.';
+          ? 'Lưu nhận xét cho ${draft.name} chưa thành công ($unresolved lỗi map).'
+          : 'Đã lưu nhận xét cho ${draft.name} lên LMS.';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(message)),
       );
@@ -1040,7 +1867,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _studentCommentErrorByClassId[classId] = error.toString();
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Luu nhan xet that bai: $error')),
+        SnackBar(content: Text('Lưu nhận xét thất bại: $error')),
       );
     } finally {
       if (mounted) {
@@ -1160,13 +1987,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String _attendanceStatusLabel(_AttendanceUiStatus status) {
     switch (status) {
       case _AttendanceUiStatus.present:
-        return 'CÃƒÆ’Ã‚Â³';
+        return 'Có';
       case _AttendanceUiStatus.late:
-        return 'Ãƒâ€žÃ‚Âi trÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¦';
+        return 'Đi trễ';
       case _AttendanceUiStatus.excusedAbsent:
-        return 'NghÃƒÂ¡Ã‚Â»Ã¢â‚¬Â° cÃƒÆ’Ã‚Â³ phÃƒÆ’Ã‚Â©p';
+        return 'Nghỉ có phép';
       case _AttendanceUiStatus.unexcusedAbsent:
-        return 'NghÃƒÂ¡Ã‚Â»Ã¢â‚¬Â° khÃƒÆ’Ã‚Â´ng phÃƒÆ’Ã‚Â©p';
+        return 'Nghỉ không phép';
     }
   }
 
@@ -1223,7 +2050,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Khong tim thay slot sap toi de luu diem danh.'),
+          content: Text('Không tìm thấy slot sắp tới để lưu điểm danh.'),
         ),
       );
       return;
@@ -1261,7 +2088,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Chua co ai duoc chon trang thai de luu diem danh.'),
+          content: Text('Chưa có ai được chọn trạng thái để lưu điểm danh.'),
         ),
       );
       return;
@@ -1296,8 +2123,8 @@ class _HomeScreenState extends State<HomeScreen> {
       final unresolvedCount = result.unresolvedParticipants.length;
       final savedCount = result.appliedParticipants;
       final saveMessage = unresolvedCount > 0
-          ? 'Da luu $savedCount ket qua, con $unresolvedCount nguoi chua map duoc.'
-          : 'Da luu $savedCount ket qua diem danh cho lop nay.';
+          ? 'Đã lưu $savedCount kết quả, còn $unresolvedCount người chưa map được.'
+          : 'Đã lưu $savedCount kết quả điểm danh cho lớp này.';
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(saveMessage),
@@ -1311,7 +2138,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Luu diem danh that bai: $error'),
+          content: Text('Lưu điểm danh thất bại: $error'),
           backgroundColor: Colors.red.shade700,
         ),
       );
@@ -1363,7 +2190,7 @@ class _HomeScreenState extends State<HomeScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Xin chÃƒÆ’Ã‚Â o, ${_session.username}',
+                  'Xin chào, ${_session.username}',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         color: Colors.white,
                         fontWeight: FontWeight.w800,
@@ -1378,7 +2205,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'ChÃƒÆ’Ã‚Âºc bÃƒÂ¡Ã‚ÂºÃ‚Â¡n cÃƒÆ’Ã‚Â³ mÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢t ngÃƒÆ’Ã‚Â y dÃƒÂ¡Ã‚ÂºÃ‚Â¡y thÃƒÂ¡Ã‚ÂºÃ‚Â­t hiÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u quÃƒÂ¡Ã‚ÂºÃ‚Â£.',
+                  'Chúc bạn có một ngày tốt lành.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Colors.white.withValues(alpha: 0.84),
                         fontWeight: FontWeight.w600,
@@ -1396,9 +2223,39 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildResponsiveFieldPair({
+    required Widget first,
+    required Widget second,
+    double spacing = 10,
+    double breakpoint = 560,
+  }) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth >= breakpoint) {
+          return Row(
+            children: [
+              Expanded(child: first),
+              SizedBox(width: spacing),
+              Expanded(child: second),
+            ],
+          );
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            first,
+            SizedBox(height: spacing),
+            second,
+          ],
+        );
+      },
+    );
+  }
+
   Widget _buildOverviewPage() {
     return RefreshIndicator(
-      onRefresh: _forceRefreshAll,
+      onRefresh: () => _showPullActionsSheet(tabIndex: 0),
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
@@ -1406,7 +2263,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildUserHeader(),
           const SizedBox(height: 10),
           _SectionCard(
-            title: 'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng quan nhanh',
+            title: 'Tổng quan nhanh',
             child: Wrap(
               spacing: 10,
               runSpacing: 10,
@@ -1415,9 +2272,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   future: _classesFuture,
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
-                      return const _KpiTile.loading(
-                          label:
-                              'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp Ãƒâ€žÃ¢â‚¬Ëœang dÃƒÂ¡Ã‚ÂºÃ‚Â¡y');
+                      return const _KpiTile.loading(label: 'Lớp đang dạy');
                     }
                     final classes = snapshot.data ?? const <ClassSummary>[];
                     final students = classes.fold<int>(
@@ -1425,9 +2280,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       (sum, cls) => sum + cls.totalStudents,
                     );
                     return _KpiTile(
-                      label: 'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp Ãƒâ€žÃ¢â‚¬Ëœang dÃƒÂ¡Ã‚ÂºÃ‚Â¡y',
+                      label: 'Lớp đang dạy',
                       value: classes.length.toString(),
-                      hint: '$students hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn',
+                      hint: '$students học viên',
                       icon: Icons.menu_book_rounded,
                     );
                   },
@@ -1436,18 +2291,15 @@ class _HomeScreenState extends State<HomeScreen> {
                   future: _remindersFuture,
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
-                      return const _KpiTile.loading(
-                          label:
-                              'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¹ch sÃƒÂ¡Ã‚ÂºÃ‚Â¯p tÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi');
+                      return const _KpiTile.loading(label: 'Lịch sắp tới');
                     }
                     final reminders = snapshot.data ?? const <ReminderItem>[];
                     final openCount =
                         reminders.where((item) => item.isWindowOpen).length;
                     return _KpiTile(
-                      label:
-                          'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¹ch sÃƒÂ¡Ã‚ÂºÃ‚Â¯p tÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi',
+                      label: 'Lịch sắp tới',
                       value: reminders.length.toString(),
-                      hint: '$openCount khung Ãƒâ€žÃ¢â‚¬Ëœang mÃƒÂ¡Ã‚Â»Ã…Â¸',
+                      hint: '$openCount khung đang mở',
                       icon: Icons.event_available_rounded,
                     );
                   },
@@ -1456,8 +2308,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   future: _payrollFuture,
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
-                      return const _KpiTile.loading(
-                          label: 'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p');
+                      return const _KpiTile.loading(label: 'Thu nhập');
                     }
                     final payroll = snapshot.data!;
                     final money = _calculatePayrollMoney(
@@ -1466,10 +2317,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       _parseManualAdjustment(),
                     );
                     return _KpiTile(
-                      label:
-                          'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p hiÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡n tÃƒÂ¡Ã‚ÂºÃ‚Â¡i',
+                      label: 'Thu nhập hiện tại',
                       value: _formatMoney(money.actualIncome),
-                      hint: 'ThÃƒÆ’Ã‚Â¡ng ${payroll.month}/${payroll.year}',
+                      hint: 'Tháng ${payroll.month}/${payroll.year}',
                       icon: Icons.payments_rounded,
                       wide: true,
                     );
@@ -1480,8 +2330,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 12),
           _SectionCard(
-            title: 'Lop chua nhan xet',
-            subtitle: 'Cac lop con hoc vien chua nhan xet tuan truoc',
+            title: 'Lớp chưa nhận xét',
+            subtitle: 'Các lớp còn học viên chưa nhận xét tuần trước',
             child: FutureBuilder<List<ClassSummary>>(
               future: _classesFuture,
               builder: (context, snapshot) {
@@ -1523,7 +2373,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   });
                 if (pendingClasses.isEmpty) {
                   return const _EmptyLabel(
-                    message: 'Khong co lop nao chua nhan xet tuan truoc.',
+                    message: 'Không có lớp nào chưa nhận xét tuần trước.',
                   );
                 }
                 return Column(
@@ -1543,10 +2393,10 @@ class _HomeScreenState extends State<HomeScreen> {
                     final moreCount =
                         missingNames.length > 2 ? missingNames.length - 2 : 0;
                     final detailText = preview.isEmpty
-                        ? 'Con $missingCount hoc vien chua nhan xet.'
+                        ? 'Còn $missingCount học viên chưa nhận xét.'
                         : moreCount > 0
-                            ? 'Con $missingCount hoc vien: $preview va $moreCount hoc vien khac.'
-                            : 'Con $missingCount hoc vien: $preview.';
+                            ? 'Còn $missingCount học viên: $preview và $moreCount học viên khác.'
+                            : 'Còn $missingCount học viên: $preview.';
                     return Container(
                       margin: const EdgeInsets.only(bottom: 10),
                       decoration: BoxDecoration(
@@ -1554,6 +2404,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         border: Border.all(color: Colors.blueGrey.shade100),
                       ),
                       child: ListTile(
+                        onTap: () => _jumpToClassCommentFromOverview(cls),
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 12,
                           vertical: 4,
@@ -1584,8 +2435,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 12),
           _SectionCard(
-            title:
-                'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp hÃƒÂ¡Ã‚Â»Ã‚Âc Ãƒâ€žÃ¢â‚¬Ëœang phÃƒÂ¡Ã‚Â»Ã‚Â¥ trÃƒÆ’Ã‚Â¡ch',
+            title: 'Lớp học đang phụ trách',
             child: FutureBuilder<List<ClassSummary>>(
               future: _classesFuture,
               builder: (context, snapshot) {
@@ -1597,9 +2447,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 }
                 final classes = snapshot.data ?? const <ClassSummary>[];
                 if (classes.isEmpty) {
-                  return const _EmptyLabel(
-                      message:
-                          'ChÃƒâ€ Ã‚Â°a cÃƒÆ’Ã‚Â³ lÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp Ãƒâ€žÃ¢â‚¬Ëœang chÃƒÂ¡Ã‚ÂºÃ‚Â¡y.');
+                  return const _EmptyLabel(message: 'Chưa có lớp đang chạy.');
                 }
 
                 return Wrap(
@@ -1611,7 +2459,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         (cls) => Chip(
                           avatar: const Icon(Icons.school_rounded, size: 16),
                           label: Text(
-                            '${cls.className} Ãƒâ€šÃ‚Â· ${cls.totalStudents} HV',
+                            '${cls.className} · ${cls.totalStudents} HV',
                           ),
                         ),
                       )
@@ -1627,7 +2475,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _buildClassesPage() {
     return RefreshIndicator(
-      onRefresh: _forceRefreshAll,
+      onRefresh: () => _showPullActionsSheet(tabIndex: 1),
       child: FutureBuilder<List<Object>>(
         future: _classesAndRemindersFuture,
         builder: (context, snapshot) {
@@ -1639,77 +2487,26 @@ class _HomeScreenState extends State<HomeScreen> {
           }
 
           final payload = snapshot.data ?? const <Object>[];
-          final classes = List<ClassSummary>.from(
-            payload.isNotEmpty && payload.first is List<ClassSummary>
-                ? payload.first as List<ClassSummary>
-                : const <ClassSummary>[],
-          )..sort((a, b) => a.className.compareTo(b.className));
-          final reminders = List<ReminderItem>.from(
-            payload.length > 1 && payload[1] is List<ReminderItem>
-                ? payload[1] as List<ReminderItem>
-                : const <ReminderItem>[],
+          final classesSource =
+              payload.isNotEmpty && payload.first is List<ClassSummary>
+                  ? payload.first as List<ClassSummary>
+                  : const <ClassSummary>[];
+          final remindersSource =
+              payload.length > 1 && payload[1] is List<ReminderItem>
+                  ? payload[1] as List<ReminderItem>
+                  : const <ReminderItem>[];
+
+          if (classesSource.isEmpty) {
+            return const _EmptyView(message: 'Không có lớp đang hoạt động.');
+          }
+
+          final computed = _computeClassesPageData(
+            classesSource: classesSource,
+            remindersSource: remindersSource,
           );
-
-          if (classes.isEmpty) {
-            return const _EmptyView(
-                message:
-                    'KhÃƒÆ’Ã‚Â´ng cÃƒÆ’Ã‚Â³ lÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp Ãƒâ€žÃ¢â‚¬Ëœang hoÃƒÂ¡Ã‚ÂºÃ‚Â¡t Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢ng.');
-          }
-
-          final remindersByClassId = <String, List<ReminderItem>>{};
-          for (final reminder in reminders) {
-            remindersByClassId
-                .putIfAbsent(reminder.classId, () => [])
-                .add(reminder);
-          }
-          for (final classReminders in remindersByClassId.values) {
-            classReminders.sort((a, b) {
-              final startDiff =
-                  _sortTimeMs(a.slotStartTime) - _sortTimeMs(b.slotStartTime);
-              if (startDiff != 0) {
-                return startDiff;
-              }
-              final endDiff =
-                  _sortTimeMs(a.slotEndTime) - _sortTimeMs(b.slotEndTime);
-              if (endDiff != 0) {
-                return endDiff;
-              }
-              return a.className.compareTo(b.className);
-            });
-          }
-
-          ReminderItem? nextReminderForClass(ClassSummary cls) {
-            final classReminders = remindersByClassId[cls.classId];
-            if (classReminders == null || classReminders.isEmpty) {
-              return null;
-            }
-            return classReminders.first;
-          }
-
-          String? nextStartTimeForClass(ClassSummary cls) {
-            final nextReminder = nextReminderForClass(cls);
-            if (nextReminder != null) {
-              return nextReminder.slotStartTime;
-            }
-            return cls.nextAttendanceWindow?.slotStartTime;
-          }
-
-          classes.sort((a, b) {
-            final aNextStart = nextStartTimeForClass(a);
-            final bNextStart = nextStartTimeForClass(b);
-            final aHasNext = aNextStart != null && aNextStart.trim().isNotEmpty;
-            final bHasNext = bNextStart != null && bNextStart.trim().isNotEmpty;
-
-            if (aHasNext && bHasNext) {
-              final diff = _sortTimeMs(aNextStart) - _sortTimeMs(bNextStart);
-              if (diff != 0) {
-                return diff;
-              }
-            }
-            if (aHasNext != bHasNext) {
-              return aHasNext ? -1 : 1;
-            }
-            return a.className.compareTo(b.className);
+          final classes = computed.classes;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _tryRevealPendingClassCard();
           });
 
           return ListView.separated(
@@ -1720,47 +2517,17 @@ class _HomeScreenState extends State<HomeScreen> {
             separatorBuilder: (_, __) => const SizedBox(height: 10),
             itemBuilder: (context, index) {
               final cls = classes[index];
-              final nextReminder = nextReminderForClass(cls);
+              final nextReminder = computed.nextReminderByClassId[cls.classId];
               final roleLabel = nextReminder != null
                   ? (nextReminder.roleShortName ??
                       nextReminder.roleName ??
-                      'ChÃƒâ€ Ã‚Â°a rÃƒÆ’Ã‚Âµ vai trÃƒÆ’Ã‚Â²')
-                  : 'ChÃƒâ€ Ã‚Â°a rÃƒÆ’Ã‚Âµ vai trÃƒÆ’Ã‚Â²';
-              final participants = <_AttendanceParticipant>[];
-              final participantSeen = <String>{};
-
-              void addParticipants(
-                List<String> names, {
-                required bool isCoTeacher,
-              }) {
-                for (final rawName in names) {
-                  final name = rawName.trim();
-                  if (name.isEmpty) {
-                    continue;
-                  }
-                  final participantKey = _attendanceParticipantKey(
-                    name: name,
-                    isCoTeacher: isCoTeacher,
-                  );
-                  if (!participantSeen.add(participantKey)) {
-                    continue;
-                  }
-                  participants.add(
-                    _AttendanceParticipant(
-                      key: participantKey,
-                      name: name,
-                      isCoTeacher: isCoTeacher,
-                    ),
-                  );
-                }
-              }
-
-              addParticipants(cls.students, isCoTeacher: false);
-              addParticipants(cls.coTeachers, isCoTeacher: true);
-              final studentNames = cls.students
-                  .map((item) => item.trim())
-                  .where((item) => item.isNotEmpty)
-                  .toList();
+                      'Chưa rõ vai trò')
+                  : 'Chưa rõ vai trò';
+              final participantBundle =
+                  computed.participantsByClassId[cls.classId] ??
+                      _buildParticipantsForClass(cls);
+              final participants = participantBundle.participants;
+              final studentNames = participantBundle.studentNames;
 
               final presentCount = _countAttendanceStatus(
                 classId: cls.classId,
@@ -1829,42 +2596,59 @@ class _HomeScreenState extends State<HomeScreen> {
               final previousCommentHeader = cls
                           .previousCommentContext?.sessionNumber !=
                       null
-                  ? 'Hoc vien chua nhan xet (buoi ${cls.previousCommentContext!.sessionNumber})'
-                  : 'Hoc vien chua nhan xet (tuan truoc)';
+                  ? 'Học viên chưa nhận xét (buổi ${cls.previousCommentContext!.sessionNumber})'
+                  : 'Học viên chưa nhận xét (tuần trước)';
               final classStartLabel = _formatDateTime(cls.classStartDate);
               final classEndLabel = _formatDateTime(cls.classEndDate);
               final isAttendanceWindowOpen = nextReminder?.isWindowOpen ??
                   cls.nextAttendanceWindow?.isWindowOpen ??
                   false;
               final attendanceRemainingLabel = isAttendanceWindowOpen
-                  ? 'Con ${_formatDurationMinutesVi(nextReminder?.minutesUntilWindowClose ?? cls.nextAttendanceWindow?.minutesUntilWindowClose ?? 0, compact: true)} de diem danh'
+                  ? 'Còn ${_formatDurationMinutesVi(nextReminder?.minutesUntilWindowClose ?? cls.nextAttendanceWindow?.minutesUntilWindowClose ?? 0, compact: true)} để điểm danh'
                   : (nextClassStartTime != null &&
                           nextClassStartTime.trim().isNotEmpty
-                      ? 'Con ${_formatDayHourMinuteCountdown(nextClassStartTime)} den buoi hoc tiep theo'
-                      : 'Chua co buoi hoc tiep theo');
+                      ? 'Còn ${_formatDayHourMinuteCountdown(nextClassStartTime)} đến buổi học tiếp theo'
+                      : 'Chưa có buổi học tiếp theo');
 
               return Card(
-                key: ValueKey<String>('class_card_${cls.classId}'),
+                key: _classCardKeyFor(cls.classId),
                 child: Padding(
                   padding: const EdgeInsets.all(14),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              cls.className,
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                          ),
-                          _Pill(
+                      LayoutBuilder(
+                        builder: (context, constraints) {
+                          final titleWidget = Text(
+                            cls.className,
+                            style: Theme.of(context).textTheme.titleMedium,
+                          );
+                          final countdownWidget = _Pill(
                             label: countdownBadge,
                             background: const Color(0xFFE3EEFF),
                             foreground: const Color(0xFF154EA3),
                             icon: Icons.schedule_rounded,
-                          ),
-                        ],
+                          );
+
+                          if (constraints.maxWidth < 420) {
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                titleWidget,
+                                const SizedBox(height: 8),
+                                countdownWidget,
+                              ],
+                            );
+                          }
+
+                          return Row(
+                            children: [
+                              Expanded(child: titleWidget),
+                              const SizedBox(width: 8),
+                              countdownWidget,
+                            ],
+                          );
+                        },
                       ),
                       const SizedBox(height: 10),
                       Wrap(
@@ -1873,27 +2657,25 @@ class _HomeScreenState extends State<HomeScreen> {
                         children: [
                           _MiniStat(
                             icon: Icons.group_rounded,
-                            label:
-                                '${cls.totalStudents} hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn',
+                            label: '${cls.totalStudents} học viên',
                           ),
                           if (cls.coTeachers.isNotEmpty)
                             _MiniStat(
                               icon: Icons.groups_rounded,
-                              label:
-                                  '${cls.coTeachers.length} Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng giÃƒÆ’Ã‚Â¡o viÃƒÆ’Ã‚Âªn',
+                              label: '${cls.coTeachers.length} đồng giáo viên',
                             ),
                           if (previousMissingCount > 0)
                             _MiniStat(
                               icon: Icons.warning_amber_rounded,
                               label:
-                                  '$previousMissingCount hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn chÃƒâ€ Ã‚Â°a nhÃƒÂ¡Ã‚ÂºÃ‚Â­n xÃƒÆ’Ã‚Â©t tuÃƒÂ¡Ã‚ÂºÃ‚Â§n trÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºc',
+                                  '$previousMissingCount học viên chưa nhận xét tuần trước',
                             ),
                         ],
                       ),
                       if (cls.coTeachers.isNotEmpty) ...[
                         const SizedBox(height: 8),
                         Text(
-                          'Ãƒâ€žÃ‚ÂÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng giÃƒÆ’Ã‚Â¡o viÃƒÆ’Ã‚Âªn: ${cls.coTeachers.join(', ')}',
+                          'Đồng giáo viên: ${cls.coTeachers.join(', ')}',
                           style:
                               Theme.of(context).textTheme.bodySmall?.copyWith(
                                     color: Colors.blueGrey.shade700,
@@ -1912,7 +2694,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           children: [
                             Expanded(
                               child: _ClassSectionButton(
-                                label: 'Chi tiÃƒÂ¡Ã‚ÂºÃ‚Â¿t',
+                                label: 'Chi tiết',
                                 icon: Icons.info_outline_rounded,
                                 selected: selectedSection ==
                                     _ClassCardSection.details,
@@ -1927,7 +2709,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             const SizedBox(width: 6),
                             Expanded(
                               child: _ClassSectionButton(
-                                label: 'Ãƒâ€žÃ‚ÂiÃƒÂ¡Ã‚Â»Ã†â€™m danh',
+                                label: 'Điểm danh',
                                 icon: Icons.fact_check_outlined,
                                 selected: selectedSection ==
                                     _ClassCardSection.attendance,
@@ -1942,7 +2724,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             const SizedBox(width: 6),
                             Expanded(
                               child: _ClassSectionButton(
-                                label: 'NhÃƒÂ¡Ã‚ÂºÃ‚Â­n xÃƒÆ’Ã‚Â©t',
+                                label: 'Nhận xét',
                                 icon: Icons.edit_note_rounded,
                                 selected:
                                     selectedSection == _ClassCardSection.note,
@@ -1986,7 +2768,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Thong tin lop hoc',
+                                'Thông tin lớp học',
                                 style: Theme.of(context)
                                     .textTheme
                                     .titleSmall
@@ -1996,13 +2778,13 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                               ),
                               const SizedBox(height: 6),
-                              Text('So luong hoc vien: ${cls.totalStudents}'),
+                              Text('Số lượng học viên: ${cls.totalStudents}'),
                               const SizedBox(height: 4),
-                              Text('Role cua toi: $roleLabel'),
+                              Text('Vai trò của bạn: $roleLabel'),
                               const SizedBox(height: 8),
-                              Text('Bat dau khoa hoc: $classStartLabel'),
+                              Text('Bắt đầu khóa học: $classStartLabel'),
                               const SizedBox(height: 4),
-                              Text('Ket thuc khoa hoc: $classEndLabel'),
+                              Text('Kết thúc khóa học: $classEndLabel'),
                               const SizedBox(height: 8),
                               _MiniStat(
                                 icon: isAttendanceWindowOpen
@@ -2013,11 +2795,11 @@ class _HomeScreenState extends State<HomeScreen> {
                               if (nextReminder != null) ...[
                                 const SizedBox(height: 8),
                                 Text(
-                                  'Buoi sap toi: ${_formatDateTime(nextReminder.slotStartTime)} - '
+                                  'Buổi sắp tới: ${_formatDateTime(nextReminder.slotStartTime)} - '
                                   '${_formatDateTime(nextReminder.slotEndTime)}',
                                 ),
                                 const SizedBox(height: 4),
-                                Text('Slot ${nextReminder.slotIndex ?? '-'}'),
+                                Text('Buổi ${nextReminder.slotIndex ?? '-'}'),
                               ],
                             ],
                           ),
@@ -2034,18 +2816,18 @@ class _HomeScreenState extends State<HomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Ãƒâ€žÃ‚ÂiÃƒÂ¡Ã‚Â»Ã†â€™m danh (${participants.length})',
+                                'Điểm danh (${participants.length})',
                                 style: Theme.of(context).textTheme.titleSmall,
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                'Co $presentCount Ãƒâ€šÃ‚Â· Tre $lateCount Ãƒâ€šÃ‚Â· Co phep $excusedCount Ãƒâ€šÃ‚Â· Khong phep $unexcusedCount',
+                                'Có $presentCount · Trễ $lateCount · Có phép $excusedCount · Không phép $unexcusedCount',
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
                               const SizedBox(height: 8),
                               if (participants.isEmpty)
                                 const Text(
-                                  'ChÃƒâ€ Ã‚Â°a cÃƒÆ’Ã‚Â³ hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn/Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng giÃƒÆ’Ã‚Â¡o viÃƒÆ’Ã‚Âªn Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã†â€™ Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã†â€™m danh.',
+                                  'Chưa có học viên/đồng giáo viên để điểm danh.',
                                 )
                               else ...[
                                 ...participants.map((participant) {
@@ -2081,8 +2863,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                             ),
                                             if (participant.isCoTeacher)
                                               _Pill(
-                                                label:
-                                                    'Ãƒâ€žÃ‚ÂÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng GV',
+                                                label: 'Đồng GV',
                                                 background:
                                                     const Color(0xFFE3EEFF),
                                                 foreground:
@@ -2168,16 +2949,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                         : const Icon(Icons.save_rounded),
                                     label: Text(
                                       isSavingAttendance
-                                          ? 'Ãƒâ€žÃ‚Âang lÃƒâ€ Ã‚Â°u Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã†â€™m danh...'
-                                          : 'LÃƒâ€ Ã‚Â°u kÃƒÂ¡Ã‚ÂºÃ‚Â¿t quÃƒÂ¡Ã‚ÂºÃ‚Â£ Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã†â€™m danh',
+                                          ? 'Đang lưu điểm danh...'
+                                          : 'Lưu kết quả điểm danh',
                                     ),
                                   ),
                                 ),
                                 if (savedAt != null) ...[
                                   const SizedBox(height: 6),
                                   Text(
-                                    'Ãƒâ€žÃ‚ÂÃƒÆ’Ã‚Â£ lÃƒâ€ Ã‚Â°u lÃƒÆ’Ã‚Âºc ${DateFormat('HH:mm:ss - dd/MM/yyyy').format(savedAt)}'
-                                    '${isDirty ? ' Ãƒâ€šÃ‚Â· CÃƒÆ’Ã‚Â³ thay Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢i chÃƒâ€ Ã‚Â°a lÃƒâ€ Ã‚Â°u' : ''}',
+                                    'Đã lưu lúc ${DateFormat('HH:mm:ss - dd/MM/yyyy').format(savedAt)}'
+                                    '${isDirty ? ' · Có thay đổi chưa lưu' : ''}',
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodySmall
@@ -2206,109 +2987,6 @@ class _HomeScreenState extends State<HomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Nhan xet tung hoc vien',
-                                style: Theme.of(context).textTheme.titleSmall,
-                              ),
-                              const SizedBox(height: 8),
-                              if (saveSlotId.isEmpty)
-                                const _EmptyLabel(
-                                  message: 'Chua co slot sap toi de nhan xet.',
-                                )
-                              else if (isLoadingComments)
-                                const _InlineLoading()
-                              else if (commentsError != null)
-                                _ErrorLabel(message: commentsError)
-                              else if (commentDrafts.isEmpty)
-                                const _EmptyLabel(
-                                  message:
-                                      'Chua co hoc vien de nhan xet cho slot nay.',
-                                )
-                              else ...[
-                                ...commentDrafts.map((item) {
-                                  return Container(
-                                    margin: const EdgeInsets.only(bottom: 10),
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFF8FAFF),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          item.name,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodyMedium
-                                              ?.copyWith(
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                        ),
-                                        const SizedBox(height: 6),
-                                        TextFormField(
-                                          key: ValueKey<String>(
-                                            'comment_${cls.classId}_${item.key}_$saveSlotId',
-                                          ),
-                                          initialValue: item.comment,
-                                          minLines: 2,
-                                          maxLines: 4,
-                                          decoration: const InputDecoration(
-                                            hintText:
-                                                'Nhap nhan xet cho hoc vien nay',
-                                          ),
-                                          onChanged: (value) {
-                                            _updateStudentCommentDraft(
-                                              classId: cls.classId,
-                                              key: item.key,
-                                              comment: value,
-                                            );
-                                          },
-                                        ),
-                                        const SizedBox(height: 8),
-                                        SizedBox(
-                                          width: double.infinity,
-                                          child: FilledButton.icon(
-                                            onPressed: isSavingComments
-                                                ? null
-                                                : () =>
-                                                    _saveSingleStudentCommentForClass(
-                                                      classId: cls.classId,
-                                                      slotId: saveSlotId,
-                                                      draft: item,
-                                                      studentNames:
-                                                          studentNames,
-                                                    ),
-                                            icon: isSavingComments &&
-                                                    savingDraftKey == item.key
-                                                ? const SizedBox(
-                                                    width: 18,
-                                                    height: 18,
-                                                    child:
-                                                        CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                    ),
-                                                  )
-                                                : const Icon(
-                                                    Icons.save_rounded,
-                                                  ),
-                                            label: Text(
-                                              isSavingComments &&
-                                                      savingDraftKey == item.key
-                                                  ? 'Dang luu...'
-                                                  : 'Luu nhan xet hoc vien nay',
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }),
-                              ],
-                              const SizedBox(height: 10),
-                              const Divider(height: 1),
-                              const SizedBox(height: 10),
-                              Text(
                                 previousCommentHeader,
                                 style: Theme.of(context).textTheme.titleSmall,
                               ),
@@ -2316,7 +2994,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               if (previousSlotId.isEmpty)
                                 const _EmptyLabel(
                                   message:
-                                      'Chua co du lieu tuan truoc de kiem tra nhan xet.',
+                                      'Chưa có dữ liệu tuần trước để kiểm tra nhận xét.',
                                 )
                               else if (isLoadingPreviousComments)
                                 const _InlineLoading()
@@ -2325,7 +3003,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               else if (previousCommentDrafts.isEmpty)
                                 const _EmptyLabel(
                                   message:
-                                      'Tuan truoc tat ca hoc vien da co nhan xet.',
+                                      'Tuần trước tất cả học viên đã có nhận xét.',
                                 )
                               else ...[
                                 if (previousMissingMessage.isNotEmpty)
@@ -2402,7 +3080,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                           maxLines: 4,
                                           decoration: const InputDecoration(
                                             hintText:
-                                                'Nhap nhan xet cho hoc vien tuan truoc',
+                                                'Nhập nhận xét cho học viên tuần trước',
                                           ),
                                           onChanged: (value) {
                                             _updatePreviousStudentCommentDraft(
@@ -2442,8 +3120,111 @@ class _HomeScreenState extends State<HomeScreen> {
                                               isSavingPreviousComments &&
                                                       savingPreviousDraftKey ==
                                                           item.key
-                                                  ? 'Dang luu...'
-                                                  : 'Luu nhan xet tuan truoc',
+                                                  ? 'Đang lưu...'
+                                                  : 'Lưu nhận xét tuần trước',
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ],
+                              const SizedBox(height: 10),
+                              const Divider(height: 1),
+                              const SizedBox(height: 10),
+                              Text(
+                                'Nhận xét từng học viên',
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 8),
+                              if (saveSlotId.isEmpty)
+                                const _EmptyLabel(
+                                  message: 'Chưa có slot sắp tới để nhận xét.',
+                                )
+                              else if (isLoadingComments)
+                                const _InlineLoading()
+                              else if (commentsError != null)
+                                _ErrorLabel(message: commentsError)
+                              else if (commentDrafts.isEmpty)
+                                const _EmptyLabel(
+                                  message:
+                                      'Chưa có học viên để nhận xét cho slot này.',
+                                )
+                              else ...[
+                                ...commentDrafts.map((item) {
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 10),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF8FAFF),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          item.name,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 6),
+                                        TextFormField(
+                                          key: ValueKey<String>(
+                                            'comment_${cls.classId}_${item.key}_$saveSlotId',
+                                          ),
+                                          initialValue: item.comment,
+                                          minLines: 2,
+                                          maxLines: 4,
+                                          decoration: const InputDecoration(
+                                            hintText:
+                                                'Nhập nhận xét cho học viên này',
+                                          ),
+                                          onChanged: (value) {
+                                            _updateStudentCommentDraft(
+                                              classId: cls.classId,
+                                              key: item.key,
+                                              comment: value,
+                                            );
+                                          },
+                                        ),
+                                        const SizedBox(height: 8),
+                                        SizedBox(
+                                          width: double.infinity,
+                                          child: FilledButton.icon(
+                                            onPressed: isSavingComments
+                                                ? null
+                                                : () =>
+                                                    _saveSingleStudentCommentForClass(
+                                                      classId: cls.classId,
+                                                      slotId: saveSlotId,
+                                                      draft: item,
+                                                      studentNames:
+                                                          studentNames,
+                                                    ),
+                                            icon: isSavingComments &&
+                                                    savingDraftKey == item.key
+                                                ? const SizedBox(
+                                                    width: 18,
+                                                    height: 18,
+                                                    child:
+                                                        CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                                  )
+                                                : const Icon(
+                                                    Icons.save_rounded,
+                                                  ),
+                                            label: Text(
+                                              isSavingComments &&
+                                                      savingDraftKey == item.key
+                                                  ? 'Đang lưu...'
+                                                  : 'Lưu nhận xét học viên này',
                                             ),
                                           ),
                                         ),
@@ -2476,7 +3257,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ..sort();
 
     return RefreshIndicator(
-      onRefresh: _forceRefreshPayroll,
+      onRefresh: () => _showPullActionsSheet(tabIndex: 2),
       child: FutureBuilder<PayrollResponse>(
         future: _payrollFuture,
         builder: (context, snapshot) {
@@ -2488,9 +3269,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           final payroll = snapshot.data;
           if (payroll == null) {
-            return const _EmptyView(
-                message:
-                    'KhÃƒÆ’Ã‚Â´ng cÃƒÆ’Ã‚Â³ dÃƒÂ¡Ã‚Â»Ã‚Â¯ liÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p.');
+            return const _EmptyView(message: 'Không có dữ liệu thu nhập.');
           }
 
           final hourlyRate = _parseHourlyRate();
@@ -2502,129 +3281,82 @@ class _HomeScreenState extends State<HomeScreen> {
           );
 
           return ListView(
+            key: const PageStorageKey<String>('payroll_list_view'),
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
             children: [
               _SectionCard(
-                title:
-                    'BÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢ lÃƒÂ¡Ã‚Â»Ã‚Âc kÃƒÂ¡Ã‚Â»Ã‚Â³ lÃƒâ€ Ã‚Â°Ãƒâ€ Ã‚Â¡ng',
+                title: 'Bộ lọc kỳ lương',
                 child: Column(
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: DropdownButtonFormField<int>(
-                            initialValue: _selectedPayrollMonth,
-                            decoration: const InputDecoration(
-                                labelText: 'ThÃƒÆ’Ã‚Â¡ng'),
-                            items: monthOptions
-                                .map(
-                                  (month) => DropdownMenuItem<int>(
-                                    value: month,
-                                    child: Text('ThÃƒÆ’Ã‚Â¡ng $month'),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: (value) {
-                              if (value == null) {
-                                return;
-                              }
-                              setState(() {
-                                _selectedPayrollMonth = value;
-                              });
-                            },
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: DropdownButtonFormField<int>(
-                            initialValue: _selectedPayrollYear,
-                            decoration: const InputDecoration(
-                                labelText: 'NÃƒâ€žÃ†â€™m'),
-                            items: yearOptions
-                                .map(
-                                  (year) => DropdownMenuItem<int>(
-                                    value: year,
-                                    child: Text(year.toString()),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: (value) {
-                              if (value == null) {
-                                return;
-                              }
-                              setState(() {
-                                _selectedPayrollYear = value;
-                              });
-                            },
-                          ),
-                        ),
-                      ],
+                    _buildResponsiveFieldPair(
+                      first: DropdownButtonFormField<int>(
+                        initialValue: _selectedPayrollMonth,
+                        decoration: const InputDecoration(labelText: 'Thang'),
+                        items: monthOptions
+                            .map(
+                              (month) => DropdownMenuItem<int>(
+                                value: month,
+                                child: Text('Thang $month'),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) {
+                          if (value == null) {
+                            return;
+                          }
+                          _onPayrollPeriodChanged(month: value);
+                        },
+                      ),
+                      second: DropdownButtonFormField<int>(
+                        initialValue: _selectedPayrollYear,
+                        decoration: const InputDecoration(labelText: 'Nam'),
+                        items: yearOptions
+                            .map(
+                              (year) => DropdownMenuItem<int>(
+                                value: year,
+                                child: Text(year.toString()),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) {
+                          if (value == null) {
+                            return;
+                          }
+                          _onPayrollPeriodChanged(year: value);
+                        },
+                      ),
                     ),
                     const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _hourlyRateController,
-                            keyboardType: TextInputType.number,
-                            decoration: const InputDecoration(
-                              labelText:
-                                  'LÃƒâ€ Ã‚Â°Ãƒâ€ Ã‚Â¡ng theo giÃƒÂ¡Ã‚Â»Ã‚Â (VND)',
-                              hintText: 'VÃƒÆ’Ã‚Â­ dÃƒÂ¡Ã‚Â»Ã‚Â¥: 150000',
-                            ),
-                            onChanged: (_) => setState(() {}),
-                          ),
+                    _buildResponsiveFieldPair(
+                      first: TextField(
+                        controller: _hourlyRateController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Luong theo gio (VND)',
+                          hintText: 'Vi du: 150000',
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TextField(
-                            controller: _manualAdjustmentController,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              signed: true,
-                            ),
-                            decoration: const InputDecoration(
-                              labelText:
-                                  'CÃƒÆ’Ã‚Â´ng bÃƒÆ’Ã‚Â¹ / Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã‚Âu chÃƒÂ¡Ã‚Â»Ã¢â‚¬Â°nh',
-                              hintText:
-                                  'VÃƒÆ’Ã‚Â­ dÃƒÂ¡Ã‚Â»Ã‚Â¥: 300000 hoÃƒÂ¡Ã‚ÂºÃ‚Â·c -200000',
-                            ),
-                            onChanged: (_) => setState(() {}),
-                          ),
+                        onChanged: (_) => _onPayrollInputChanged(),
+                      ),
+                      second: TextField(
+                        controller: _manualAdjustmentController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          signed: true,
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: () => _reloadPayrollOnly(),
-                            icon: const Icon(Icons.filter_alt_rounded),
-                            label: const Text(
-                                'Xem dÃƒÂ¡Ã‚Â»Ã‚Â¯ liÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u'),
-                          ),
+                        decoration: const InputDecoration(
+                          labelText: 'Cong bu / dieu chinh',
+                          hintText: 'Vi du: 300000 hoac -200000',
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _forceRefreshPayroll,
-                            icon: const Icon(Icons.cloud_sync_rounded),
-                            label: const Text(
-                                'CÃƒÂ¡Ã‚ÂºÃ‚Â­p nhÃƒÂ¡Ã‚ÂºÃ‚Â­t mÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi'),
-                          ),
-                        ),
-                      ],
+                        onChanged: (_) => _onPayrollInputChanged(),
+                      ),
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: 12),
               _SectionCard(
-                title:
-                    'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng hÃƒÂ¡Ã‚Â»Ã‚Â£p thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p ${payroll.month}/${payroll.year}',
-                subtitle:
-                    'Ãƒâ€žÃ‚ÂÃƒÆ’Ã‚Â£ tÃƒÆ’Ã‚Â­nh role + office hour + cÃƒÆ’Ã‚Â´ng bÃƒÆ’Ã‚Â¹ thÃƒÂ¡Ã‚Â»Ã‚Â§ cÃƒÆ’Ã‚Â´ng',
+                title: 'Tổng hợp thu nhập ${payroll.month}/${payroll.year}',
+                subtitle: 'Đã tính role + office hour + công bù thủ công',
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -2635,28 +3367,28 @@ class _HomeScreenState extends State<HomeScreen> {
                         _MiniStat(
                           icon: Icons.check_circle_rounded,
                           label:
-                              '${moneySummary.actualSlots} buoi (${moneySummary.actualHours.toStringAsFixed(2)}h)',
+                              '${moneySummary.actualSlots} buổi (${moneySummary.actualHours.toStringAsFixed(2)}h)',
                         ),
                         _MiniStat(
                           icon: Icons.auto_graph_rounded,
                           label:
-                              '${moneySummary.projectedSlots} buoi du kien (${moneySummary.projectedHours.toStringAsFixed(2)}h)',
+                              '${moneySummary.projectedSlots} buổi dự kiến (${moneySummary.projectedHours.toStringAsFixed(2)}h)',
                         ),
                       ],
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p lÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp hÃƒÂ¡Ã‚Â»Ã‚Âc: ${_formatMoney(moneySummary.classIncome)}',
+                      'Thu nhập lớp học: ${_formatMoney(moneySummary.classIncome)}',
                       style: TextStyle(
                         color: Colors.green.shade700,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
                     Text(
-                      'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p office hour: ${_formatMoney(moneySummary.officeHourIncome)}',
+                      'Thu nhập office hour: ${_formatMoney(moneySummary.officeHourIncome)}',
                     ),
                     Text(
-                      'CÃƒÆ’Ã‚Â´ng bÃƒÆ’Ã‚Â¹ / Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã‚Âu chÃƒÂ¡Ã‚Â»Ã¢â‚¬Â°nh: ${_formatMoney(moneySummary.manualAdjustment)}',
+                      'Công bù / điều chỉnh: ${_formatMoney(moneySummary.manualAdjustment)}',
                       style: TextStyle(
                         color: moneySummary.manualAdjustment < 0
                             ? Colors.red.shade700
@@ -2666,13 +3398,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng hiÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡n tÃƒÂ¡Ã‚ÂºÃ‚Â¡i: ${_formatMoney(moneySummary.actualIncome)}',
+                      'Tổng hiện tại: ${_formatMoney(moneySummary.actualIncome)}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             color: Colors.green.shade700,
                           ),
                     ),
                     Text(
-                      'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng dÃƒÂ¡Ã‚Â»Ã‚Â± kiÃƒÂ¡Ã‚ÂºÃ‚Â¿n cuÃƒÂ¡Ã‚Â»Ã¢â‚¬Ëœi thÃƒÆ’Ã‚Â¡ng: ${_formatMoney(moneySummary.projectedIncome)}',
+                      'Tổng dự kiến cuối tháng: ${_formatMoney(moneySummary.projectedIncome)}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             color: const Color(0xFF1C4ED8),
                           ),
@@ -2697,7 +3429,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       .map(
                         (role) => Chip(
                           label: Text(
-                            '${role.role}: ${role.slotCount} slots Ãƒâ€šÃ‚Â· ${role.totalHours}h',
+                            '${role.role}: ${role.slotCount} slots · ${role.totalHours}h',
                           ),
                         ),
                       )
@@ -2707,7 +3439,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (payroll.officeHours.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 _SectionCard(
-                  title: 'Chi tiÃƒÂ¡Ã‚ÂºÃ‚Â¿t office hour',
+                  title: 'Chi tiết office hour',
                   child: Column(
                     children: payroll.officeHours.map((officeHour) {
                       final typeLabel = officeHour.officeHourType ??
@@ -2720,24 +3452,29 @@ class _HomeScreenState extends State<HomeScreen> {
                           border: Border.all(color: Colors.blueGrey.shade100),
                         ),
                         child: ListTile(
-                          title:
-                              Text('$typeLabel Ãƒâ€šÃ‚Â· ${officeHour.status}'),
+                          title: Text('$typeLabel · ${officeHour.status}'),
                           subtitle: Text(
                             '${_formatDateTime(officeHour.startTime)} - ${_formatDateTime(officeHour.endTime)}\n'
-                            '${officeHour.studentCount} hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn Ãƒâ€šÃ‚Â· ${officeHour.durationHours}h',
+                            '${officeHour.studentCount} học viên · ${officeHour.durationHours}h',
                           ),
-                          trailing: Text(
-                            _formatMoney(
-                              _calculateOfficeHourIncome(
-                                  officeHour, hourlyRate),
+                          trailing: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 120),
+                            child: Text(
+                              _formatMoney(
+                                _calculateOfficeHourIncome(
+                                    officeHour, hourlyRate),
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.end,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(
+                                    color: Colors.green.shade700,
+                                    fontWeight: FontWeight.w800,
+                                  ),
                             ),
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleMedium
-                                ?.copyWith(
-                                  color: Colors.green.shade700,
-                                  fontWeight: FontWeight.w800,
-                                ),
                           ),
                           isThreeLine: true,
                         ),
@@ -2749,7 +3486,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (payroll.classes.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 _SectionCard(
-                  title: 'Chi tiÃƒÂ¡Ã‚ÂºÃ‚Â¿t theo lÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp',
+                  title: 'Chi tiết theo lớp',
                   child: Column(
                     children: payroll.classes.map((cls) {
                       final classIncome =
@@ -2761,23 +3498,32 @@ class _HomeScreenState extends State<HomeScreen> {
                           border: Border.all(color: Colors.blueGrey.shade100),
                         ),
                         child: ExpansionTile(
+                          key: PageStorageKey<String>(
+                            'payroll_class_tile_${cls.classId}',
+                          ),
                           tilePadding:
                               const EdgeInsets.symmetric(horizontal: 12),
                           childrenPadding:
                               const EdgeInsets.fromLTRB(12, 0, 12, 8),
                           title: Text(cls.className),
                           subtitle: Text(
-                            '${cls.taughtSlotCount} slots Ãƒâ€šÃ‚Â· ${cls.totalHours}h',
+                            '${cls.taughtSlotCount} slots · ${cls.totalHours}h',
                           ),
-                          trailing: Text(
-                            _formatMoney(classIncome),
-                            style: Theme.of(context)
-                                .textTheme
-                                .titleSmall
-                                ?.copyWith(
-                                  color: Colors.green.shade700,
-                                  fontWeight: FontWeight.w800,
-                                ),
+                          trailing: ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 120),
+                            child: Text(
+                              _formatMoney(classIncome),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.end,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(
+                                    color: Colors.green.shade700,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                            ),
                           ),
                           children: cls.slots
                               .map(
@@ -2785,11 +3531,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                   dense: true,
                                   contentPadding: EdgeInsets.zero,
                                   title: Text(
-                                    'Slot ${slot.slotIndex ?? '-'} Ãƒâ€šÃ‚Â· ${slot.attendanceStatus}',
+                                    'Slot ${slot.slotIndex ?? '-'} · ${slot.attendanceStatus}',
                                   ),
                                   subtitle: Text(
                                     '${_formatDateTime(slot.startTime)} - ${_formatDateTime(slot.endTime)}\n'
-                                    'Vai trÃƒÆ’Ã‚Â² ${slot.roleShortName ?? slot.roleName ?? 'UNKNOWN'} Ãƒâ€šÃ‚Â· ${slot.durationHours}h',
+                                    'Vai trò ${slot.roleShortName ?? slot.roleName ?? 'UNKNOWN'} · ${slot.durationHours}h',
                                   ),
                                   isThreeLine: true,
                                 ),
@@ -2808,38 +3554,37 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  Widget _buildTabPage(int index) {
+    switch (index) {
+      case 0:
+        return _buildOverviewPage();
+      case 1:
+        return _buildClassesPage();
+      case 2:
+        return _buildPayrollPage();
+      default:
+        return _buildOverviewPage();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final accents = Theme.of(context).extension<AppAccentColors>()!;
-    final titles = [
-      'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng quan',
-      'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp hÃƒÂ¡Ã‚Â»Ã‚Âc',
-      'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p'
-    ];
+    final titles = ['Tổng quan', 'Lớp học', 'Thu nhập'];
     final safeIndex = _selectedIndex.clamp(0, titles.length - 1);
     return Scaffold(
       appBar: AppBar(
         title: Text(titles[safeIndex]),
-        actions: [
-          IconButton(
-            onPressed: _forceRefreshAll,
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'LÃƒÆ’Ã‚Â m mÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi',
-          ),
-          IconButton(
-            onPressed: widget.onSignOut,
-            icon: const Icon(Icons.logout_rounded),
-            tooltip: 'Ãƒâ€žÃ‚ÂÃƒâ€žÃ†â€™ng xuÃƒÂ¡Ã‚ÂºÃ‚Â¥t',
-          ),
-        ],
       ),
-      body: IndexedStack(
-        index: safeIndex,
-        children: [
-          _buildOverviewPage(),
-          _buildClassesPage(),
-          _buildPayrollPage(),
-        ],
+      body: PageView.builder(
+        controller: _pageController,
+        onPageChanged: _onTabPageChanged,
+        itemCount: titles.length,
+        itemBuilder: (context, index) {
+          return RepaintBoundary(
+            key: PageStorageKey<String>('home_tab_page_$index'),
+            child: _buildTabPage(index),
+          );
+        },
       ),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
@@ -2850,40 +3595,26 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         child: NavigationBar(
           selectedIndex: safeIndex,
-          onDestinationSelected: (index) {
-            setState(() {
-              _selectedIndex = index;
-            });
-          },
+          onDestinationSelected: _onDestinationSelected,
           destinations: const [
             NavigationDestination(
               icon: Icon(Icons.dashboard_outlined),
               selectedIcon: Icon(Icons.dashboard_rounded),
-              label: 'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng quan',
+              label: 'Tổng quan',
             ),
             NavigationDestination(
               icon: Icon(Icons.class_outlined),
               selectedIcon: Icon(Icons.class_rounded),
-              label: 'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp hÃƒÂ¡Ã‚Â»Ã‚Âc',
+              label: 'Lớp học',
             ),
             NavigationDestination(
               icon: Icon(Icons.account_balance_wallet_outlined),
               selectedIcon: Icon(Icons.account_balance_wallet_rounded),
-              label: 'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p',
+              label: 'Thu nhập',
             ),
           ],
         ),
       ),
-      floatingActionButton: safeIndex == 2
-          ? FloatingActionButton.extended(
-              onPressed: _forceRefreshPayroll,
-              icon: const Icon(Icons.sync_rounded),
-              label: const Text(
-                  'CÃƒÂ¡Ã‚ÂºÃ‚Â­p nhÃƒÂ¡Ã‚ÂºÃ‚Â­t lÃƒâ€ Ã‚Â°Ãƒâ€ Ã‚Â¡ng'),
-              backgroundColor: accents.ink,
-              foregroundColor: Colors.white,
-            )
-          : null,
     );
   }
 }
@@ -2951,64 +3682,77 @@ class _KpiTile extends StatelessWidget {
   const _KpiTile.loading({
     required this.label,
   })  : value = '...',
-        hint = 'Ãƒâ€žÃ‚Âang tÃƒÂ¡Ã‚ÂºÃ‚Â£i',
+        hint = 'Đang tải',
         icon = Icons.hourglass_top_rounded,
         wide = false,
         loading = true;
 
   @override
   Widget build(BuildContext context) {
-    final width = wide ? 320.0 : 154.0;
-    return Container(
-      width: width,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(14),
-        color: const Color(0xFFF5F8FF),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 18, color: const Color(0xFF1C4ED8)),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          if (loading)
-            const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            )
-          else
-            Text(
-              value,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.w800,
+    final constraints = wide
+        ? const BoxConstraints(
+            minWidth: 180,
+            maxWidth: 420,
+            minHeight: 116,
+          )
+        : const BoxConstraints(
+            minWidth: 130,
+            maxWidth: 260,
+            minHeight: 116,
+          );
+
+    return ConstrainedBox(
+      constraints: constraints,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(14),
+          color: const Color(0xFFF5F8FF),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 18, color: const Color(0xFF1C4ED8)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
                   ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (loading)
+              const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              Text(
+                value,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            const SizedBox(height: 4),
+            Text(
+              hint,
+              style: Theme.of(context).textTheme.bodySmall,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
-          const SizedBox(height: 4),
-          Text(
-            hint,
-            style: Theme.of(context).textTheme.bodySmall,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -3031,18 +3775,25 @@ class _MiniStat extends StatelessWidget {
         borderRadius: BorderRadius.circular(10),
         color: const Color(0xFFF5F8FF),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 15, color: const Color(0xFF2958C7)),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
-          ),
-        ],
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 260),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 15, color: const Color(0xFF2958C7)),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -3069,21 +3820,28 @@ class _Pill extends StatelessWidget {
         color: background,
         borderRadius: BorderRadius.circular(999),
       ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 12, color: foreground),
-            const SizedBox(width: 4),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 220),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              Icon(icon, size: 12, color: foreground),
+              const SizedBox(width: 4),
+            ],
+            Flexible(
+              child: Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: foreground,
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+            ),
           ],
-          Text(
-            label,
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: foreground,
-                  fontWeight: FontWeight.w800,
-                ),
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -3122,6 +3880,78 @@ class _ClassSectionButton extends StatelessWidget {
         label,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+}
+
+class _PullActionButton extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final Color accent;
+  final VoidCallback onPressed;
+
+  const _PullActionButton({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.accent,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white.withValues(alpha: 0.1),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onPressed,
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.22),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, size: 18, color: Colors.white),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                          ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Colors.white.withValues(alpha: 0.82),
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -3245,6 +4075,28 @@ class _EmptyView extends StatelessWidget {
   }
 }
 
+class _ClassParticipantsBundle {
+  final List<_AttendanceParticipant> participants;
+  final List<String> studentNames;
+
+  const _ClassParticipantsBundle({
+    required this.participants,
+    required this.studentNames,
+  });
+}
+
+class _ClassesPageComputed {
+  final List<ClassSummary> classes;
+  final Map<String, ReminderItem?> nextReminderByClassId;
+  final Map<String, _ClassParticipantsBundle> participantsByClassId;
+
+  const _ClassesPageComputed({
+    required this.classes,
+    required this.nextReminderByClassId,
+    required this.participantsByClassId,
+  });
+}
+
 class _AttendanceParticipant {
   final String key;
   final String name;
@@ -3289,6 +4141,11 @@ enum _ClassCardSection {
   details,
   attendance,
   note,
+}
+
+enum _PullQuickAction {
+  reload,
+  signOut,
 }
 
 enum _AttendanceUiStatus {

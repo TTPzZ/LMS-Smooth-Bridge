@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../config/app_config.dart';
 import '../models/auth_models.dart';
@@ -20,42 +23,179 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
+  static const String _requiredDomain = 'mindx.net.vn';
+  static const String _rememberPasswordKey = 'auth.remember_password_v1';
+  static const String _rememberedEmailKey = 'auth.remembered_email_v1';
+  static const String _rememberedPasswordKey = 'auth.remembered_password_v1';
+
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   late final TextEditingController _emailController;
-  late final TextEditingController _usernameController;
   late final TextEditingController _passwordController;
+  late final FocusNode _emailFocusNode;
 
   bool _isSubmitting = false;
   bool _obscurePassword = true;
-  bool _didEditUsername = false;
+  bool _rememberPassword = false;
   String? _errorText;
 
   @override
   void initState() {
     super.initState();
     _emailController = TextEditingController();
-    _usernameController = TextEditingController();
     _passwordController = TextEditingController();
+    _emailFocusNode = FocusNode();
+    _emailFocusNode.addListener(_onEmailFocusChanged);
+    unawaited(_loadRememberedCredentials());
   }
 
   @override
   void dispose() {
+    _emailFocusNode.removeListener(_onEmailFocusChanged);
+    _emailFocusNode.dispose();
     _emailController.dispose();
-    _usernameController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
 
-  String _usernameFromEmail(String email) {
-    final normalized = email.trim();
+  void _onEmailFocusChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
+  }
+
+  bool get _showMindxSuggestion {
+    final raw = _emailController.text.trim();
+    return _emailFocusNode.hasFocus && raw.isNotEmpty && !raw.contains('@');
+  }
+
+  String _normalizeEmailInput(
+    String raw, {
+    bool appendDefaultDomain = true,
+  }) {
+    final normalized = raw.trim().toLowerCase();
     if (normalized.isEmpty) {
       return '';
     }
+
     final atIndex = normalized.indexOf('@');
-    if (atIndex <= 0) {
-      return normalized;
+    if (atIndex < 0) {
+      return appendDefaultDomain ? '$normalized@$_requiredDomain' : normalized;
     }
-    return normalized.substring(0, atIndex);
+
+    final localPart = normalized.substring(0, atIndex).trim();
+    final domain = normalized.substring(atIndex + 1).trim();
+    if (localPart.isEmpty || domain.isEmpty) {
+      return '';
+    }
+    return '$localPart@$domain';
+  }
+
+  String _usernameFromEmail(String email) {
+    final atIndex = email.indexOf('@');
+    if (atIndex <= 0) {
+      return '';
+    }
+    return email.substring(0, atIndex);
+  }
+
+  Future<void> _loadRememberedCredentials() async {
+    final prefs = await SharedPreferences.getInstance();
+    final remember = prefs.getBool(_rememberPasswordKey) ?? false;
+    final savedEmail = prefs.getString(_rememberedEmailKey) ?? '';
+    final savedPassword = prefs.getString(_rememberedPasswordKey) ?? '';
+
+    if (!mounted) {
+      return;
+    }
+
+    final normalizedEmail = _normalizeEmailInput(
+      savedEmail,
+      appendDefaultDomain: true,
+    );
+    setState(() {
+      _rememberPassword = remember;
+      if (remember) {
+        _emailController.text = normalizedEmail;
+        _passwordController.text = savedPassword;
+      }
+    });
+  }
+
+  Future<void> _saveRememberedCredentials({
+    required String email,
+    required String password,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!_rememberPassword) {
+      await prefs.setBool(_rememberPasswordKey, false);
+      await prefs.remove(_rememberedEmailKey);
+      await prefs.remove(_rememberedPasswordKey);
+      return;
+    }
+
+    await prefs.setBool(_rememberPasswordKey, true);
+    await prefs.setString(_rememberedEmailKey, email);
+    await prefs.setString(_rememberedPasswordKey, password);
+  }
+
+  Future<void> _onRememberPasswordChanged(bool? value) async {
+    final next = value ?? false;
+    if (next == _rememberPassword) {
+      return;
+    }
+
+    setState(() {
+      _rememberPassword = next;
+    });
+
+    final normalizedEmail = _normalizeEmailInput(
+      _emailController.text,
+      appendDefaultDomain: true,
+    );
+    await _saveRememberedCredentials(
+      email: normalizedEmail,
+      password: _passwordController.text,
+    );
+  }
+
+  void _applyDefaultDomainToEmailField() {
+    final current = _emailController.text;
+    final normalized = _normalizeEmailInput(
+      current,
+      appendDefaultDomain: true,
+    );
+    if (normalized.isEmpty) {
+      return;
+    }
+    if (current.trim().toLowerCase() == normalized) {
+      return;
+    }
+    _emailController.value = TextEditingValue(
+      text: normalized,
+      selection: TextSelection.collapsed(offset: normalized.length),
+    );
+  }
+
+  String? _validateEmail(String? value) {
+    final normalized = _normalizeEmailInput(
+      value ?? '',
+      appendDefaultDomain: true,
+    );
+    if (normalized.isEmpty) {
+      return 'Vui lòng nhập email.';
+    }
+
+    final atIndex = normalized.indexOf('@');
+    if (atIndex <= 0 || atIndex == normalized.length - 1) {
+      return 'Email chưa đúng định dạng.';
+    }
+
+    final domain = normalized.substring(atIndex + 1);
+    if (domain != _requiredDomain) {
+      return 'Chỉ hỗ trợ email @$_requiredDomain.';
+    }
+    return null;
   }
 
   Future<void> _submit() async {
@@ -65,6 +205,19 @@ class _LoginScreenState extends State<LoginScreen> {
 
     final form = _formKey.currentState;
     if (form == null || !form.validate()) {
+      return;
+    }
+
+    _applyDefaultDomainToEmailField();
+    final email = _normalizeEmailInput(
+      _emailController.text,
+      appendDefaultDomain: true,
+    );
+    final username = _usernameFromEmail(email);
+    if (username.isEmpty) {
+      setState(() {
+        _errorText = 'Email chưa đúng định dạng.';
+      });
       return;
     }
 
@@ -81,39 +234,31 @@ class _LoginScreenState extends State<LoginScreen> {
       return;
     }
 
-    final email = _emailController.text.trim();
-    final enteredUsername = _usernameController.text.trim();
-    final resolvedUsername = enteredUsername.isNotEmpty
-        ? enteredUsername
-        : _usernameFromEmail(email);
-
-    if (resolvedUsername.isEmpty) {
-      setState(() {
-        _isSubmitting = false;
-        _errorText = 'Vui lòng nhập tên đăng nhập.';
-      });
-      return;
-    }
-
     try {
       final session = await widget.sessionManager.signIn(
         apiKey: AppConfig.firebaseApiKey.trim(),
         email: email,
-        username: resolvedUsername,
+        username: username,
         password: _passwordController.text,
         backendBaseUrl: AppConfig.apiBaseUrl.trim(),
+      );
+
+      await _saveRememberedCredentials(
+        email: email,
+        password: _passwordController.text,
       );
 
       if (!mounted) {
         return;
       }
       widget.onLoginSuccess(session);
-    } catch (error) {
+    } catch (_) {
       if (!mounted) {
         return;
       }
       setState(() {
-        _errorText = 'Đăng nhập thất bại. Kiểm tra thông tin và thử lại.';
+        _errorText =
+            'Đăng nhập thất bại. Kiểm tra email @$_requiredDomain và mật khẩu.';
       });
     } finally {
       if (mounted) {
@@ -140,55 +285,124 @@ class _LoginScreenState extends State<LoginScreen> {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [
-                    Colors.blue.shade900,
-                    Colors.blue.shade600,
-                    const Color(0xFF1BA5A5),
+                    const Color(0xFF06224A),
+                    const Color(0xFF114FA3),
+                    const Color(0xFF0E8B93),
                   ],
                 ),
               ),
             ),
           ),
           Positioned(
-            left: -100,
-            top: 70,
+            left: -120,
+            top: 50,
             child: _SoftOrb(
-              size: 230,
-              color: Colors.white.withValues(alpha: 0.12),
+              size: 240,
+              color: Colors.white.withValues(alpha: 0.1),
             ),
           ),
           Positioned(
-            right: -80,
-            bottom: 60,
+            right: -100,
+            bottom: 40,
             child: _SoftOrb(
-              size: 260,
-              color: Colors.white.withValues(alpha: 0.12),
+              size: 280,
+              color: Colors.white.withValues(alpha: 0.11),
             ),
           ),
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
                 padding: EdgeInsets.fromLTRB(
-                    18, topPadding + 6, 18, bottomPadding + 10),
+                  18,
+                  topPadding + 6,
+                  18,
+                  bottomPadding + 12,
+                ),
                 child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 460),
-                  child: Card(
+                  constraints: const BoxConstraints(maxWidth: 500),
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.95),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.45),
+                        width: 1.2,
+                      ),
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Color(0x40081C3B),
+                          blurRadius: 28,
+                          offset: Offset(0, 14),
+                        ),
+                      ],
+                    ),
                     child: Padding(
-                      padding: const EdgeInsets.all(22),
+                      padding: EdgeInsets.fromLTRB(
+                        MediaQuery.sizeOf(context).width < 380 ? 16 : 22,
+                        MediaQuery.sizeOf(context).width < 380 ? 18 : 22,
+                        MediaQuery.sizeOf(context).width < 380 ? 16 : 22,
+                        MediaQuery.sizeOf(context).width < 380 ? 20 : 24,
+                      ),
                       child: Form(
                         key: _formKey,
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
                           children: [
-                            Text(
-                              'LMS Smooth Bridge',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .headlineSmall
-                                  ?.copyWith(
-                                    color: accents.ink,
+                            LayoutBuilder(
+                              builder: (context, headerConstraints) {
+                                final logo = Container(
+                                  width: 42,
+                                  height: 42,
+                                  decoration: BoxDecoration(
+                                    gradient: const LinearGradient(
+                                      begin: Alignment.topLeft,
+                                      end: Alignment.bottomRight,
+                                      colors: [
+                                        Color(0xFF175EC3),
+                                        Color(0xFF0E8B93),
+                                      ],
+                                    ),
+                                    borderRadius: BorderRadius.circular(12),
                                   ),
+                                  child: const Icon(
+                                    Icons.school_rounded,
+                                    color: Colors.white,
+                                    size: 24,
+                                  ),
+                                );
+                                final title = Text(
+                                  'LMS Smooth Bridge',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .headlineSmall
+                                      ?.copyWith(
+                                        color: accents.ink,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                );
+
+                                if (headerConstraints.maxWidth < 340) {
+                                  return Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      logo,
+                                      const SizedBox(height: 10),
+                                      title,
+                                    ],
+                                  );
+                                }
+
+                                return Row(
+                                  children: [
+                                    logo,
+                                    const SizedBox(width: 12),
+                                    Expanded(child: title),
+                                  ],
+                                );
+                              },
                             ),
-                            const SizedBox(height: 8),
+                            const SizedBox(height: 10),
                             Text(
                               'Đăng nhập để quản lý lớp học và theo dõi thu nhập nhanh gọn.',
                               style: Theme.of(context)
@@ -198,52 +412,47 @@ class _LoginScreenState extends State<LoginScreen> {
                                     color: accents.mutedInk,
                                   ),
                             ),
-                            const SizedBox(height: 20),
+                            const SizedBox(height: 18),
                             TextFormField(
+                              focusNode: _emailFocusNode,
                               controller: _emailController,
                               keyboardType: TextInputType.emailAddress,
                               textInputAction: TextInputAction.next,
-                              decoration: const InputDecoration(
+                              autofillHints: const [AutofillHints.email],
+                              decoration: InputDecoration(
                                 labelText: 'Email',
-                                hintText: 'name@example.com',
+                                hintText: 'Nhập mã giáo viên của bạn',
+                                prefixIcon:
+                                    const Icon(Icons.alternate_email_rounded),
+                                suffixText: _showMindxSuggestion
+                                    ? '@$_requiredDomain'
+                                    : null,
+                                helperText: _showMindxSuggestion
+                                    ? 'Sẽ tự thêm @$_requiredDomain khi đăng nhập.'
+                                    : 'Chỉ hỗ trợ email @$_requiredDomain',
+                                helperMaxLines: 2,
                               ),
-                              validator: (value) {
-                                final email = (value ?? '').trim();
-                                if (email.isEmpty) {
-                                  return 'Vui lòng nhập email.';
-                                }
-                                if (!email.contains('@')) {
-                                  return 'Email chưa đúng định dạng.';
-                                }
-                                return null;
-                              },
-                              onChanged: (value) {
-                                if (_didEditUsername) {
+                              validator: _validateEmail,
+                              onChanged: (_) {
+                                if (_errorText != null) {
+                                  setState(() {
+                                    _errorText = null;
+                                  });
                                   return;
                                 }
-                                final derived = _usernameFromEmail(value);
-                                if (_usernameController.text != derived) {
-                                  _usernameController.text = derived;
+                                if (_emailFocusNode.hasFocus &&
+                                    _rememberPassword &&
+                                    _passwordController.text.isNotEmpty) {
+                                  setState(() {});
+                                  return;
+                                }
+                                if (_emailFocusNode.hasFocus) {
+                                  setState(() {});
                                 }
                               },
-                            ),
-                            const SizedBox(height: 12),
-                            TextFormField(
-                              controller: _usernameController,
-                              textInputAction: TextInputAction.next,
-                              decoration: const InputDecoration(
-                                labelText: 'Tên đăng nhập',
-                                hintText: 'Nhập tên đăng nhập LMS',
-                                helperText: 'Tự động lấy từ email, có thể sửa.',
-                              ),
-                              validator: (value) {
-                                if ((value ?? '').trim().isEmpty) {
-                                  return 'Vui lòng nhập tên đăng nhập.';
-                                }
-                                return null;
-                              },
-                              onChanged: (_) {
-                                _didEditUsername = true;
+                              onFieldSubmitted: (_) {
+                                _applyDefaultDomainToEmailField();
+                                FocusScope.of(context).nextFocus();
                               },
                             ),
                             const SizedBox(height: 12),
@@ -251,8 +460,11 @@ class _LoginScreenState extends State<LoginScreen> {
                               controller: _passwordController,
                               obscureText: _obscurePassword,
                               textInputAction: TextInputAction.done,
+                              autofillHints: const [AutofillHints.password],
                               decoration: InputDecoration(
                                 labelText: 'Mật khẩu',
+                                prefixIcon:
+                                    const Icon(Icons.lock_outline_rounded),
                                 suffixIcon: IconButton(
                                   onPressed: () {
                                     setState(() {
@@ -272,7 +484,40 @@ class _LoginScreenState extends State<LoginScreen> {
                                 }
                                 return null;
                               },
+                              onChanged: (_) {
+                                if (_errorText == null) {
+                                  return;
+                                }
+                                setState(() {
+                                  _errorText = null;
+                                });
+                              },
                               onFieldSubmitted: (_) => _submit(),
+                            ),
+                            const SizedBox(height: 8),
+                            CheckboxListTile(
+                              value: _rememberPassword,
+                              onChanged: _isSubmitting
+                                  ? null
+                                  : (value) {
+                                      unawaited(
+                                        _onRememberPasswordChanged(value),
+                                      );
+                                    },
+                              contentPadding: EdgeInsets.zero,
+                              dense: false,
+                              controlAffinity: ListTileControlAffinity.leading,
+                              title: Text(
+                                'Nhớ mật khẩu',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
                             if (_errorText != null) ...[
                               const SizedBox(height: 12),
@@ -280,8 +525,9 @@ class _LoginScreenState extends State<LoginScreen> {
                                 decoration: BoxDecoration(
                                   color: Colors.red.shade50,
                                   borderRadius: BorderRadius.circular(12),
-                                  border:
-                                      Border.all(color: Colors.red.shade100),
+                                  border: Border.all(
+                                    color: Colors.red.shade100,
+                                  ),
                                 ),
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 12,
@@ -302,6 +548,10 @@ class _LoginScreenState extends State<LoginScreen> {
                             const SizedBox(height: 18),
                             FilledButton.icon(
                               onPressed: _isSubmitting ? null : _submit,
+                              style: FilledButton.styleFrom(
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 14),
+                              ),
                               icon: _isSubmitting
                                   ? const SizedBox(
                                       width: 16,

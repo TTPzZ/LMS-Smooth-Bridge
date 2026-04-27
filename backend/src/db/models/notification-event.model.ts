@@ -15,7 +15,7 @@ const notificationEventSchema = new mongoose.Schema(
         },
         stage: {
             type: String,
-            enum: ['UPCOMING', 'OPEN'],
+            enum: ['UPCOMING', 'OPEN', 'COMMENT_PENDING_NOON'],
             required: true
         },
         classId: {

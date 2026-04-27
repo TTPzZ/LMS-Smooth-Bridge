@@ -9,6 +9,12 @@ class AppTheme {
   static const Color _brand = Color(0xFF1C4ED8);
   static const Color _success = Color(0xFF0F9D58);
   static const Color _danger = Color(0xFFC62828);
+  static const List<String> _fontFallback = <String>[
+    'Noto Sans',
+    'Roboto',
+    'Arial',
+    'sans-serif',
+  ];
 
   static ThemeData light() {
     const scheme = ColorScheme(
@@ -28,31 +34,43 @@ class AppTheme {
         fontWeight: FontWeight.w800,
         fontSize: 24,
         color: _ink,
+      ).copyWith(
+        fontFamilyFallback: _fontFallback,
       ),
       titleLarge: GoogleFonts.manrope(
         fontWeight: FontWeight.w700,
         fontSize: 20,
         color: _ink,
+      ).copyWith(
+        fontFamilyFallback: _fontFallback,
       ),
       titleMedium: GoogleFonts.manrope(
         fontWeight: FontWeight.w700,
         fontSize: 16,
         color: _ink,
+      ).copyWith(
+        fontFamilyFallback: _fontFallback,
       ),
       bodyLarge: GoogleFonts.manrope(
         fontWeight: FontWeight.w500,
         fontSize: 15,
         color: _ink,
+      ).copyWith(
+        fontFamilyFallback: _fontFallback,
       ),
       bodyMedium: GoogleFonts.manrope(
         fontWeight: FontWeight.w500,
         fontSize: 14,
         color: _ink,
+      ).copyWith(
+        fontFamilyFallback: _fontFallback,
       ),
       bodySmall: GoogleFonts.manrope(
         fontWeight: FontWeight.w500,
         fontSize: 12,
         color: _mutedInk,
+      ).copyWith(
+        fontFamilyFallback: _fontFallback,
       ),
     );
 
@@ -60,6 +78,7 @@ class AppTheme {
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: _surface,
+      fontFamilyFallback: _fontFallback,
       textTheme: textTheme,
       appBarTheme: AppBarTheme(
         centerTitle: false,
@@ -140,6 +159,7 @@ class AppTheme {
         elevation: 0,
         backgroundColor: Colors.white,
         indicatorColor: const Color(0xFFD9E5FF),
+        labelBehavior: NavigationDestinationLabelBehavior.onlyShowSelected,
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
             return textTheme.bodySmall?.copyWith(
