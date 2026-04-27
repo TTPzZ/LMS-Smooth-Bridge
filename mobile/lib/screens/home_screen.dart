@@ -30,13 +30,13 @@ String _formatDurationMinutesVi(
 
   final parts = <String>[];
   if (days > 0) {
-    parts.add('$days ngày');
+    parts.add('$days ngÃƒÆ’Ã‚Â y');
   }
   if (hours > 0) {
-    parts.add('$hours giờ');
+    parts.add('$hours giÃƒÂ¡Ã‚Â»Ã‚Â');
   }
   if (mins > 0 || parts.isEmpty) {
-    parts.add('$mins phút');
+    parts.add('$mins phÃƒÆ’Ã‚Âºt');
   }
   return parts.join(' ');
 }
@@ -156,8 +156,8 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content:
-                Text('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.')),
+            content: Text(
+                'PhiÃƒÆ’Ã‚Âªn Ãƒâ€žÃ¢â‚¬ËœÃƒâ€žÃ†â€™ng nhÃƒÂ¡Ã‚ÂºÃ‚Â­p Ãƒâ€žÃ¢â‚¬ËœÃƒÆ’Ã‚Â£ hÃƒÂ¡Ã‚ÂºÃ‚Â¿t hÃƒÂ¡Ã‚ÂºÃ‚Â¡n. Vui lÃƒÆ’Ã‚Â²ng Ãƒâ€žÃ¢â‚¬ËœÃƒâ€žÃ†â€™ng nhÃƒÂ¡Ã‚ÂºÃ‚Â­p lÃƒÂ¡Ã‚ÂºÃ‚Â¡i.')),
       );
     }
 
@@ -1160,13 +1160,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String _attendanceStatusLabel(_AttendanceUiStatus status) {
     switch (status) {
       case _AttendanceUiStatus.present:
-        return 'Có';
+        return 'CÃƒÆ’Ã‚Â³';
       case _AttendanceUiStatus.late:
-        return 'Đi trễ';
+        return 'Ãƒâ€žÃ‚Âi trÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¦';
       case _AttendanceUiStatus.excusedAbsent:
-        return 'Nghỉ có phép';
+        return 'NghÃƒÂ¡Ã‚Â»Ã¢â‚¬Â° cÃƒÆ’Ã‚Â³ phÃƒÆ’Ã‚Â©p';
       case _AttendanceUiStatus.unexcusedAbsent:
-        return 'Nghỉ không phép';
+        return 'NghÃƒÂ¡Ã‚Â»Ã¢â‚¬Â° khÃƒÆ’Ã‚Â´ng phÃƒÆ’Ã‚Â©p';
     }
   }
 
@@ -1363,7 +1363,7 @@ class _HomeScreenState extends State<HomeScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Xin chào, ${_session.username}',
+                  'Xin chÃƒÆ’Ã‚Â o, ${_session.username}',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
                         color: Colors.white,
                         fontWeight: FontWeight.w800,
@@ -1378,7 +1378,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Chúc bạn có một ngày dạy thật hiệu quả.',
+                  'ChÃƒÆ’Ã‚Âºc bÃƒÂ¡Ã‚ÂºÃ‚Â¡n cÃƒÆ’Ã‚Â³ mÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢t ngÃƒÆ’Ã‚Â y dÃƒÂ¡Ã‚ÂºÃ‚Â¡y thÃƒÂ¡Ã‚ÂºÃ‚Â­t hiÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u quÃƒÂ¡Ã‚ÂºÃ‚Â£.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Colors.white.withValues(alpha: 0.84),
                         fontWeight: FontWeight.w600,
@@ -1406,7 +1406,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _buildUserHeader(),
           const SizedBox(height: 10),
           _SectionCard(
-            title: 'Tổng quan nhanh',
+            title: 'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng quan nhanh',
             child: Wrap(
               spacing: 10,
               runSpacing: 10,
@@ -1415,7 +1415,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   future: _classesFuture,
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
-                      return const _KpiTile.loading(label: 'Lớp đang dạy');
+                      return const _KpiTile.loading(
+                          label:
+                              'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp Ãƒâ€žÃ¢â‚¬Ëœang dÃƒÂ¡Ã‚ÂºÃ‚Â¡y');
                     }
                     final classes = snapshot.data ?? const <ClassSummary>[];
                     final students = classes.fold<int>(
@@ -1423,9 +1425,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       (sum, cls) => sum + cls.totalStudents,
                     );
                     return _KpiTile(
-                      label: 'Lớp đang dạy',
+                      label: 'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp Ãƒâ€žÃ¢â‚¬Ëœang dÃƒÂ¡Ã‚ÂºÃ‚Â¡y',
                       value: classes.length.toString(),
-                      hint: '$students học viên',
+                      hint: '$students hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn',
                       icon: Icons.menu_book_rounded,
                     );
                   },
@@ -1434,15 +1436,18 @@ class _HomeScreenState extends State<HomeScreen> {
                   future: _remindersFuture,
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
-                      return const _KpiTile.loading(label: 'Lịch sắp tới');
+                      return const _KpiTile.loading(
+                          label:
+                              'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¹ch sÃƒÂ¡Ã‚ÂºÃ‚Â¯p tÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi');
                     }
                     final reminders = snapshot.data ?? const <ReminderItem>[];
                     final openCount =
                         reminders.where((item) => item.isWindowOpen).length;
                     return _KpiTile(
-                      label: 'Lịch sắp tới',
+                      label:
+                          'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¹ch sÃƒÂ¡Ã‚ÂºÃ‚Â¯p tÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi',
                       value: reminders.length.toString(),
-                      hint: '$openCount khung đang mở',
+                      hint: '$openCount khung Ãƒâ€žÃ¢â‚¬Ëœang mÃƒÂ¡Ã‚Â»Ã…Â¸',
                       icon: Icons.event_available_rounded,
                     );
                   },
@@ -1451,7 +1456,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   future: _payrollFuture,
                   builder: (context, snapshot) {
                     if (!snapshot.hasData) {
-                      return const _KpiTile.loading(label: 'Thu nhập');
+                      return const _KpiTile.loading(
+                          label: 'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p');
                     }
                     final payroll = snapshot.data!;
                     final money = _calculatePayrollMoney(
@@ -1460,9 +1466,10 @@ class _HomeScreenState extends State<HomeScreen> {
                       _parseManualAdjustment(),
                     );
                     return _KpiTile(
-                      label: 'Thu nhập hiện tại',
+                      label:
+                          'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p hiÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡n tÃƒÂ¡Ã‚ÂºÃ‚Â¡i',
                       value: _formatMoney(money.actualIncome),
-                      hint: 'Tháng ${payroll.month}/${payroll.year}',
+                      hint: 'ThÃƒÆ’Ã‚Â¡ng ${payroll.month}/${payroll.year}',
                       icon: Icons.payments_rounded,
                       wide: true,
                     );
@@ -1473,10 +1480,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 12),
           _SectionCard(
-            title: 'Lịch dạy gần nhất',
-            subtitle: 'Tập trung vào các ca cần xử lý sớm',
-            child: FutureBuilder<List<ReminderItem>>(
-              future: _remindersFuture,
+            title: 'Lop chua nhan xet',
+            subtitle: 'Cac lop con hoc vien chua nhan xet tuan truoc',
+            child: FutureBuilder<List<ClassSummary>>(
+              future: _classesFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const _InlineLoading();
@@ -1484,15 +1491,62 @@ class _HomeScreenState extends State<HomeScreen> {
                 if (snapshot.hasError) {
                   return _ErrorLabel(message: snapshot.error.toString());
                 }
-                final reminders = snapshot.data ?? const <ReminderItem>[];
-                if (reminders.isEmpty) {
+                final classes = snapshot.data ?? const <ClassSummary>[];
+                final pendingClasses = classes
+                    .where(
+                      (cls) =>
+                          (cls.previousCommentContext
+                                  ?.missingCommentStudentCount ??
+                              0) >
+                          0,
+                    )
+                    .toList()
+                  ..sort((a, b) {
+                    final aCount =
+                        a.previousCommentContext?.missingCommentStudentCount ??
+                            0;
+                    final bCount =
+                        b.previousCommentContext?.missingCommentStudentCount ??
+                            0;
+                    if (aCount != bCount) {
+                      return bCount.compareTo(aCount);
+                    }
+                    final aStart = _parseDateTimeLoose(
+                          a.previousCommentContext?.slotStartTime,
+                        )?.millisecondsSinceEpoch ??
+                        0;
+                    final bStart = _parseDateTimeLoose(
+                          b.previousCommentContext?.slotStartTime,
+                        )?.millisecondsSinceEpoch ??
+                        0;
+                    return bStart.compareTo(aStart);
+                  });
+                if (pendingClasses.isEmpty) {
                   return const _EmptyLabel(
-                    message: 'Không có lịch sắp tới trong khung hiện tại.',
+                    message: 'Khong co lop nao chua nhan xet tuan truoc.',
                   );
                 }
                 return Column(
-                  children: reminders.take(4).map((reminder) {
-                    final badge = _ReminderBadge.fromReminder(reminder);
+                  children: pendingClasses.take(6).map((cls) {
+                    final commentContext = cls.previousCommentContext;
+                    final missingCount =
+                        commentContext?.missingCommentStudentCount ?? 0;
+                    final sessionLabel = commentContext?.sessionNumber != null
+                        ? 'Buoi ${commentContext!.sessionNumber}'
+                        : 'Tuan truoc';
+                    final slotStartLabel =
+                        _formatDateTime(commentContext?.slotStartTime);
+                    final missingNames =
+                        commentContext?.missingCommentStudents ??
+                            const <String>[];
+                    final preview = missingNames.take(2).join(', ');
+                    final moreCount =
+                        missingNames.length > 2 ? missingNames.length - 2 : 0;
+                    final detailText = preview.isEmpty
+                        ? 'Con $missingCount hoc vien chua nhan xet.'
+                        : moreCount > 0
+                            ? 'Con $missingCount hoc vien: $preview va $moreCount hoc vien khac.'
+                            : 'Con $missingCount hoc vien: $preview.';
                     return Container(
                       margin: const EdgeInsets.only(bottom: 10),
                       decoration: BoxDecoration(
@@ -1505,19 +1559,21 @@ class _HomeScreenState extends State<HomeScreen> {
                           vertical: 4,
                         ),
                         title: Text(
-                          reminder.className,
+                          cls.className,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleMedium,
                         ),
                         subtitle: Text(
-                          'Slot ${reminder.slotIndex ?? '-'}  ·  ${_formatDateTime(reminder.slotStartTime)}',
+                          '$sessionLabel - $slotStartLabel\n$detailText',
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
                         ),
                         trailing: _Pill(
-                          label: badge.label,
-                          background: badge.background,
-                          foreground: badge.foreground,
-                          icon: badge.icon,
+                          label: '$missingCount HV',
+                          background: const Color(0xFFFFF4E5),
+                          foreground: const Color(0xFF92400E),
+                          icon: Icons.warning_amber_rounded,
                         ),
                       ),
                     );
@@ -1528,7 +1584,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 12),
           _SectionCard(
-            title: 'Lớp học đang phụ trách',
+            title:
+                'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp hÃƒÂ¡Ã‚Â»Ã‚Âc Ãƒâ€žÃ¢â‚¬Ëœang phÃƒÂ¡Ã‚Â»Ã‚Â¥ trÃƒÆ’Ã‚Â¡ch',
             child: FutureBuilder<List<ClassSummary>>(
               future: _classesFuture,
               builder: (context, snapshot) {
@@ -1540,7 +1597,9 @@ class _HomeScreenState extends State<HomeScreen> {
                 }
                 final classes = snapshot.data ?? const <ClassSummary>[];
                 if (classes.isEmpty) {
-                  return const _EmptyLabel(message: 'Chưa có lớp đang chạy.');
+                  return const _EmptyLabel(
+                      message:
+                          'ChÃƒâ€ Ã‚Â°a cÃƒÆ’Ã‚Â³ lÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp Ãƒâ€žÃ¢â‚¬Ëœang chÃƒÂ¡Ã‚ÂºÃ‚Â¡y.');
                 }
 
                 return Wrap(
@@ -1552,7 +1611,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         (cls) => Chip(
                           avatar: const Icon(Icons.school_rounded, size: 16),
                           label: Text(
-                            '${cls.className} · ${cls.totalStudents} HV',
+                            '${cls.className} Ãƒâ€šÃ‚Â· ${cls.totalStudents} HV',
                           ),
                         ),
                       )
@@ -1592,7 +1651,9 @@ class _HomeScreenState extends State<HomeScreen> {
           );
 
           if (classes.isEmpty) {
-            return const _EmptyView(message: 'Không có lớp đang hoạt động.');
+            return const _EmptyView(
+                message:
+                    'KhÃƒÆ’Ã‚Â´ng cÃƒÆ’Ã‚Â³ lÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp Ãƒâ€žÃ¢â‚¬Ëœang hoÃƒÂ¡Ã‚ÂºÃ‚Â¡t Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢ng.');
           }
 
           final remindersByClassId = <String, List<ReminderItem>>{};
@@ -1663,8 +1724,8 @@ class _HomeScreenState extends State<HomeScreen> {
               final roleLabel = nextReminder != null
                   ? (nextReminder.roleShortName ??
                       nextReminder.roleName ??
-                      'Chưa rõ vai trò')
-                  : 'Chưa rõ vai trò';
+                      'ChÃƒâ€ Ã‚Â°a rÃƒÆ’Ã‚Âµ vai trÃƒÆ’Ã‚Â²')
+                  : 'ChÃƒâ€ Ã‚Â°a rÃƒÆ’Ã‚Âµ vai trÃƒÆ’Ã‚Â²';
               final participants = <_AttendanceParticipant>[];
               final participantSeen = <String>{};
 
@@ -1812,25 +1873,27 @@ class _HomeScreenState extends State<HomeScreen> {
                         children: [
                           _MiniStat(
                             icon: Icons.group_rounded,
-                            label: '${cls.totalStudents} học viên',
+                            label:
+                                '${cls.totalStudents} hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn',
                           ),
                           if (cls.coTeachers.isNotEmpty)
                             _MiniStat(
                               icon: Icons.groups_rounded,
-                              label: '${cls.coTeachers.length} đồng giáo viên',
+                              label:
+                                  '${cls.coTeachers.length} Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng giÃƒÆ’Ã‚Â¡o viÃƒÆ’Ã‚Âªn',
                             ),
                           if (previousMissingCount > 0)
                             _MiniStat(
                               icon: Icons.warning_amber_rounded,
                               label:
-                                  '$previousMissingCount học viên chưa nhận xét tuần trước',
+                                  '$previousMissingCount hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn chÃƒâ€ Ã‚Â°a nhÃƒÂ¡Ã‚ÂºÃ‚Â­n xÃƒÆ’Ã‚Â©t tuÃƒÂ¡Ã‚ÂºÃ‚Â§n trÃƒâ€ Ã‚Â°ÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºc',
                             ),
                         ],
                       ),
                       if (cls.coTeachers.isNotEmpty) ...[
                         const SizedBox(height: 8),
                         Text(
-                          'Đồng giáo viên: ${cls.coTeachers.join(', ')}',
+                          'Ãƒâ€žÃ‚ÂÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng giÃƒÆ’Ã‚Â¡o viÃƒÆ’Ã‚Âªn: ${cls.coTeachers.join(', ')}',
                           style:
                               Theme.of(context).textTheme.bodySmall?.copyWith(
                                     color: Colors.blueGrey.shade700,
@@ -1849,7 +1912,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           children: [
                             Expanded(
                               child: _ClassSectionButton(
-                                label: 'Chi tiết',
+                                label: 'Chi tiÃƒÂ¡Ã‚ÂºÃ‚Â¿t',
                                 icon: Icons.info_outline_rounded,
                                 selected: selectedSection ==
                                     _ClassCardSection.details,
@@ -1864,7 +1927,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             const SizedBox(width: 6),
                             Expanded(
                               child: _ClassSectionButton(
-                                label: 'Điểm danh',
+                                label: 'Ãƒâ€žÃ‚ÂiÃƒÂ¡Ã‚Â»Ã†â€™m danh',
                                 icon: Icons.fact_check_outlined,
                                 selected: selectedSection ==
                                     _ClassCardSection.attendance,
@@ -1879,7 +1942,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             const SizedBox(width: 6),
                             Expanded(
                               child: _ClassSectionButton(
-                                label: 'Nhận xét',
+                                label: 'NhÃƒÂ¡Ã‚ÂºÃ‚Â­n xÃƒÆ’Ã‚Â©t',
                                 icon: Icons.edit_note_rounded,
                                 selected:
                                     selectedSection == _ClassCardSection.note,
@@ -1971,18 +2034,18 @@ class _HomeScreenState extends State<HomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Điểm danh (${participants.length})',
+                                'Ãƒâ€žÃ‚ÂiÃƒÂ¡Ã‚Â»Ã†â€™m danh (${participants.length})',
                                 style: Theme.of(context).textTheme.titleSmall,
                               ),
                               const SizedBox(height: 2),
                               Text(
-                                'Co $presentCount · Tre $lateCount · Co phep $excusedCount · Khong phep $unexcusedCount',
+                                'Co $presentCount Ãƒâ€šÃ‚Â· Tre $lateCount Ãƒâ€šÃ‚Â· Co phep $excusedCount Ãƒâ€šÃ‚Â· Khong phep $unexcusedCount',
                                 style: Theme.of(context).textTheme.bodySmall,
                               ),
                               const SizedBox(height: 8),
                               if (participants.isEmpty)
                                 const Text(
-                                  'Chưa có học viên/đồng giáo viên để điểm danh.',
+                                  'ChÃƒâ€ Ã‚Â°a cÃƒÆ’Ã‚Â³ hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn/Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng giÃƒÆ’Ã‚Â¡o viÃƒÆ’Ã‚Âªn Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã†â€™ Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã†â€™m danh.',
                                 )
                               else ...[
                                 ...participants.map((participant) {
@@ -2018,7 +2081,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                             ),
                                             if (participant.isCoTeacher)
                                               _Pill(
-                                                label: 'Đồng GV',
+                                                label:
+                                                    'Ãƒâ€žÃ‚ÂÃƒÂ¡Ã‚Â»Ã¢â‚¬Å“ng GV',
                                                 background:
                                                     const Color(0xFFE3EEFF),
                                                 foreground:
@@ -2104,16 +2168,16 @@ class _HomeScreenState extends State<HomeScreen> {
                                         : const Icon(Icons.save_rounded),
                                     label: Text(
                                       isSavingAttendance
-                                          ? 'Đang lưu điểm danh...'
-                                          : 'Lưu kết quả điểm danh',
+                                          ? 'Ãƒâ€žÃ‚Âang lÃƒâ€ Ã‚Â°u Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã†â€™m danh...'
+                                          : 'LÃƒâ€ Ã‚Â°u kÃƒÂ¡Ã‚ÂºÃ‚Â¿t quÃƒÂ¡Ã‚ÂºÃ‚Â£ Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã†â€™m danh',
                                     ),
                                   ),
                                 ),
                                 if (savedAt != null) ...[
                                   const SizedBox(height: 6),
                                   Text(
-                                    'Đã lưu lúc ${DateFormat('HH:mm:ss - dd/MM/yyyy').format(savedAt)}'
-                                    '${isDirty ? ' · Có thay đổi chưa lưu' : ''}',
+                                    'Ãƒâ€žÃ‚ÂÃƒÆ’Ã‚Â£ lÃƒâ€ Ã‚Â°u lÃƒÆ’Ã‚Âºc ${DateFormat('HH:mm:ss - dd/MM/yyyy').format(savedAt)}'
+                                    '${isDirty ? ' Ãƒâ€šÃ‚Â· CÃƒÆ’Ã‚Â³ thay Ãƒâ€žÃ¢â‚¬ËœÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢i chÃƒâ€ Ã‚Â°a lÃƒâ€ Ã‚Â°u' : ''}',
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodySmall
@@ -2424,7 +2488,9 @@ class _HomeScreenState extends State<HomeScreen> {
           }
           final payroll = snapshot.data;
           if (payroll == null) {
-            return const _EmptyView(message: 'Không có dữ liệu thu nhập.');
+            return const _EmptyView(
+                message:
+                    'KhÃƒÆ’Ã‚Â´ng cÃƒÆ’Ã‚Â³ dÃƒÂ¡Ã‚Â»Ã‚Â¯ liÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p.');
           }
 
           final hourlyRate = _parseHourlyRate();
@@ -2440,7 +2506,8 @@ class _HomeScreenState extends State<HomeScreen> {
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
             children: [
               _SectionCard(
-                title: 'Bộ lọc kỳ lương',
+                title:
+                    'BÃƒÂ¡Ã‚Â»Ã¢â€žÂ¢ lÃƒÂ¡Ã‚Â»Ã‚Âc kÃƒÂ¡Ã‚Â»Ã‚Â³ lÃƒâ€ Ã‚Â°Ãƒâ€ Ã‚Â¡ng',
                 child: Column(
                   children: [
                     Row(
@@ -2448,13 +2515,13 @@ class _HomeScreenState extends State<HomeScreen> {
                         Expanded(
                           child: DropdownButtonFormField<int>(
                             initialValue: _selectedPayrollMonth,
-                            decoration:
-                                const InputDecoration(labelText: 'Tháng'),
+                            decoration: const InputDecoration(
+                                labelText: 'ThÃƒÆ’Ã‚Â¡ng'),
                             items: monthOptions
                                 .map(
                                   (month) => DropdownMenuItem<int>(
                                     value: month,
-                                    child: Text('Tháng $month'),
+                                    child: Text('ThÃƒÆ’Ã‚Â¡ng $month'),
                                   ),
                                 )
                                 .toList(),
@@ -2472,7 +2539,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         Expanded(
                           child: DropdownButtonFormField<int>(
                             initialValue: _selectedPayrollYear,
-                            decoration: const InputDecoration(labelText: 'Năm'),
+                            decoration: const InputDecoration(
+                                labelText: 'NÃƒâ€žÃ†â€™m'),
                             items: yearOptions
                                 .map(
                                   (year) => DropdownMenuItem<int>(
@@ -2501,8 +2569,9 @@ class _HomeScreenState extends State<HomeScreen> {
                             controller: _hourlyRateController,
                             keyboardType: TextInputType.number,
                             decoration: const InputDecoration(
-                              labelText: 'Lương theo giờ (VND)',
-                              hintText: 'Ví dụ: 150000',
+                              labelText:
+                                  'LÃƒâ€ Ã‚Â°Ãƒâ€ Ã‚Â¡ng theo giÃƒÂ¡Ã‚Â»Ã‚Â (VND)',
+                              hintText: 'VÃƒÆ’Ã‚Â­ dÃƒÂ¡Ã‚Â»Ã‚Â¥: 150000',
                             ),
                             onChanged: (_) => setState(() {}),
                           ),
@@ -2515,8 +2584,10 @@ class _HomeScreenState extends State<HomeScreen> {
                               signed: true,
                             ),
                             decoration: const InputDecoration(
-                              labelText: 'Công bù / điều chỉnh',
-                              hintText: 'Ví dụ: 300000 hoặc -200000',
+                              labelText:
+                                  'CÃƒÆ’Ã‚Â´ng bÃƒÆ’Ã‚Â¹ / Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã‚Âu chÃƒÂ¡Ã‚Â»Ã¢â‚¬Â°nh',
+                              hintText:
+                                  'VÃƒÆ’Ã‚Â­ dÃƒÂ¡Ã‚Â»Ã‚Â¥: 300000 hoÃƒÂ¡Ã‚ÂºÃ‚Â·c -200000',
                             ),
                             onChanged: (_) => setState(() {}),
                           ),
@@ -2530,7 +2601,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: FilledButton.icon(
                             onPressed: () => _reloadPayrollOnly(),
                             icon: const Icon(Icons.filter_alt_rounded),
-                            label: const Text('Xem dữ liệu'),
+                            label: const Text(
+                                'Xem dÃƒÂ¡Ã‚Â»Ã‚Â¯ liÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡u'),
                           ),
                         ),
                         const SizedBox(width: 8),
@@ -2538,7 +2610,8 @@ class _HomeScreenState extends State<HomeScreen> {
                           child: OutlinedButton.icon(
                             onPressed: _forceRefreshPayroll,
                             icon: const Icon(Icons.cloud_sync_rounded),
-                            label: const Text('Cập nhật mới'),
+                            label: const Text(
+                                'CÃƒÂ¡Ã‚ÂºÃ‚Â­p nhÃƒÂ¡Ã‚ÂºÃ‚Â­t mÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi'),
                           ),
                         ),
                       ],
@@ -2548,8 +2621,10 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
               const SizedBox(height: 12),
               _SectionCard(
-                title: 'Tổng hợp thu nhập ${payroll.month}/${payroll.year}',
-                subtitle: 'Đã tính role + office hour + công bù thủ công',
+                title:
+                    'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng hÃƒÂ¡Ã‚Â»Ã‚Â£p thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p ${payroll.month}/${payroll.year}',
+                subtitle:
+                    'Ãƒâ€žÃ‚ÂÃƒÆ’Ã‚Â£ tÃƒÆ’Ã‚Â­nh role + office hour + cÃƒÆ’Ã‚Â´ng bÃƒÆ’Ã‚Â¹ thÃƒÂ¡Ã‚Â»Ã‚Â§ cÃƒÆ’Ã‚Â´ng',
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -2571,17 +2646,17 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 10),
                     Text(
-                      'Thu nhập lớp học: ${_formatMoney(moneySummary.classIncome)}',
+                      'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p lÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp hÃƒÂ¡Ã‚Â»Ã‚Âc: ${_formatMoney(moneySummary.classIncome)}',
                       style: TextStyle(
                         color: Colors.green.shade700,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
                     Text(
-                      'Thu nhập office hour: ${_formatMoney(moneySummary.officeHourIncome)}',
+                      'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p office hour: ${_formatMoney(moneySummary.officeHourIncome)}',
                     ),
                     Text(
-                      'Công bù / điều chỉnh: ${_formatMoney(moneySummary.manualAdjustment)}',
+                      'CÃƒÆ’Ã‚Â´ng bÃƒÆ’Ã‚Â¹ / Ãƒâ€žÃ¢â‚¬ËœiÃƒÂ¡Ã‚Â»Ã‚Âu chÃƒÂ¡Ã‚Â»Ã¢â‚¬Â°nh: ${_formatMoney(moneySummary.manualAdjustment)}',
                       style: TextStyle(
                         color: moneySummary.manualAdjustment < 0
                             ? Colors.red.shade700
@@ -2591,13 +2666,13 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Tổng hiện tại: ${_formatMoney(moneySummary.actualIncome)}',
+                      'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng hiÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¡n tÃƒÂ¡Ã‚ÂºÃ‚Â¡i: ${_formatMoney(moneySummary.actualIncome)}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             color: Colors.green.shade700,
                           ),
                     ),
                     Text(
-                      'Tổng dự kiến cuối tháng: ${_formatMoney(moneySummary.projectedIncome)}',
+                      'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng dÃƒÂ¡Ã‚Â»Ã‚Â± kiÃƒÂ¡Ã‚ÂºÃ‚Â¿n cuÃƒÂ¡Ã‚Â»Ã¢â‚¬Ëœi thÃƒÆ’Ã‚Â¡ng: ${_formatMoney(moneySummary.projectedIncome)}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             color: const Color(0xFF1C4ED8),
                           ),
@@ -2622,7 +2697,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       .map(
                         (role) => Chip(
                           label: Text(
-                            '${role.role}: ${role.slotCount} slots · ${role.totalHours}h',
+                            '${role.role}: ${role.slotCount} slots Ãƒâ€šÃ‚Â· ${role.totalHours}h',
                           ),
                         ),
                       )
@@ -2632,7 +2707,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (payroll.officeHours.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 _SectionCard(
-                  title: 'Chi tiết office hour',
+                  title: 'Chi tiÃƒÂ¡Ã‚ÂºÃ‚Â¿t office hour',
                   child: Column(
                     children: payroll.officeHours.map((officeHour) {
                       final typeLabel = officeHour.officeHourType ??
@@ -2645,10 +2720,11 @@ class _HomeScreenState extends State<HomeScreen> {
                           border: Border.all(color: Colors.blueGrey.shade100),
                         ),
                         child: ListTile(
-                          title: Text('$typeLabel · ${officeHour.status}'),
+                          title:
+                              Text('$typeLabel Ãƒâ€šÃ‚Â· ${officeHour.status}'),
                           subtitle: Text(
                             '${_formatDateTime(officeHour.startTime)} - ${_formatDateTime(officeHour.endTime)}\n'
-                            '${officeHour.studentCount} học viên · ${officeHour.durationHours}h',
+                            '${officeHour.studentCount} hÃƒÂ¡Ã‚Â»Ã‚Âc viÃƒÆ’Ã‚Âªn Ãƒâ€šÃ‚Â· ${officeHour.durationHours}h',
                           ),
                           trailing: Text(
                             _formatMoney(
@@ -2673,7 +2749,7 @@ class _HomeScreenState extends State<HomeScreen> {
               if (payroll.classes.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 _SectionCard(
-                  title: 'Chi tiết theo lớp',
+                  title: 'Chi tiÃƒÂ¡Ã‚ÂºÃ‚Â¿t theo lÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp',
                   child: Column(
                     children: payroll.classes.map((cls) {
                       final classIncome =
@@ -2691,7 +2767,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               const EdgeInsets.fromLTRB(12, 0, 12, 8),
                           title: Text(cls.className),
                           subtitle: Text(
-                            '${cls.taughtSlotCount} slots · ${cls.totalHours}h',
+                            '${cls.taughtSlotCount} slots Ãƒâ€šÃ‚Â· ${cls.totalHours}h',
                           ),
                           trailing: Text(
                             _formatMoney(classIncome),
@@ -2709,11 +2785,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                   dense: true,
                                   contentPadding: EdgeInsets.zero,
                                   title: Text(
-                                    'Slot ${slot.slotIndex ?? '-'} · ${slot.attendanceStatus}',
+                                    'Slot ${slot.slotIndex ?? '-'} Ãƒâ€šÃ‚Â· ${slot.attendanceStatus}',
                                   ),
                                   subtitle: Text(
                                     '${_formatDateTime(slot.startTime)} - ${_formatDateTime(slot.endTime)}\n'
-                                    'Vai trò ${slot.roleShortName ?? slot.roleName ?? 'UNKNOWN'} · ${slot.durationHours}h',
+                                    'Vai trÃƒÆ’Ã‚Â² ${slot.roleShortName ?? slot.roleName ?? 'UNKNOWN'} Ãƒâ€šÃ‚Â· ${slot.durationHours}h',
                                   ),
                                   isThreeLine: true,
                                 ),
@@ -2735,7 +2811,11 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final accents = Theme.of(context).extension<AppAccentColors>()!;
-    final titles = ['Tổng quan', 'Lớp học', 'Thu nhập'];
+    final titles = [
+      'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng quan',
+      'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp hÃƒÂ¡Ã‚Â»Ã‚Âc',
+      'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p'
+    ];
     final safeIndex = _selectedIndex.clamp(0, titles.length - 1);
     return Scaffold(
       appBar: AppBar(
@@ -2744,12 +2824,12 @@ class _HomeScreenState extends State<HomeScreen> {
           IconButton(
             onPressed: _forceRefreshAll,
             icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Làm mới',
+            tooltip: 'LÃƒÆ’Ã‚Â m mÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºi',
           ),
           IconButton(
             onPressed: widget.onSignOut,
             icon: const Icon(Icons.logout_rounded),
-            tooltip: 'Đăng xuất',
+            tooltip: 'Ãƒâ€žÃ‚ÂÃƒâ€žÃ†â€™ng xuÃƒÂ¡Ã‚ÂºÃ‚Â¥t',
           ),
         ],
       ),
@@ -2779,17 +2859,17 @@ class _HomeScreenState extends State<HomeScreen> {
             NavigationDestination(
               icon: Icon(Icons.dashboard_outlined),
               selectedIcon: Icon(Icons.dashboard_rounded),
-              label: 'Tổng quan',
+              label: 'TÃƒÂ¡Ã‚Â»Ã¢â‚¬Â¢ng quan',
             ),
             NavigationDestination(
               icon: Icon(Icons.class_outlined),
               selectedIcon: Icon(Icons.class_rounded),
-              label: 'Lớp học',
+              label: 'LÃƒÂ¡Ã‚Â»Ã¢â‚¬Âºp hÃƒÂ¡Ã‚Â»Ã‚Âc',
             ),
             NavigationDestination(
               icon: Icon(Icons.account_balance_wallet_outlined),
               selectedIcon: Icon(Icons.account_balance_wallet_rounded),
-              label: 'Thu nhập',
+              label: 'Thu nhÃƒÂ¡Ã‚ÂºÃ‚Â­p',
             ),
           ],
         ),
@@ -2798,7 +2878,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ? FloatingActionButton.extended(
               onPressed: _forceRefreshPayroll,
               icon: const Icon(Icons.sync_rounded),
-              label: const Text('Cập nhật lương'),
+              label: const Text(
+                  'CÃƒÂ¡Ã‚ÂºÃ‚Â­p nhÃƒÂ¡Ã‚ÂºÃ‚Â­t lÃƒâ€ Ã‚Â°Ãƒâ€ Ã‚Â¡ng'),
               backgroundColor: accents.ink,
               foregroundColor: Colors.white,
             )
@@ -2870,7 +2951,7 @@ class _KpiTile extends StatelessWidget {
   const _KpiTile.loading({
     required this.label,
   })  : value = '...',
-        hint = 'Đang tải',
+        hint = 'Ãƒâ€žÃ‚Âang tÃƒÂ¡Ã‚ÂºÃ‚Â£i',
         icon = Icons.hourglass_top_rounded,
         wide = false,
         loading = true;
@@ -3042,48 +3123,6 @@ class _ClassSectionButton extends StatelessWidget {
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
       ),
-    );
-  }
-}
-
-class _ReminderBadge {
-  final String label;
-  final Color background;
-  final Color foreground;
-  final IconData icon;
-
-  const _ReminderBadge({
-    required this.label,
-    required this.background,
-    required this.foreground,
-    required this.icon,
-  });
-
-  factory _ReminderBadge.fromReminder(ReminderItem reminder) {
-    if (reminder.isWindowOpen) {
-      return const _ReminderBadge(
-        label: 'Đang mở',
-        background: Color(0xFFDDF7E8),
-        foreground: Color(0xFF0F9D58),
-        icon: Icons.check_circle_rounded,
-      );
-    }
-
-    if (reminder.minutesUntilWindowOpen > 0) {
-      return _ReminderBadge(
-        label:
-            'Còn ${_formatDurationMinutesVi(reminder.minutesUntilWindowOpen)}',
-        background: const Color(0xFFE3EEFF),
-        foreground: const Color(0xFF1C4ED8),
-        icon: Icons.schedule_rounded,
-      );
-    }
-
-    return const _ReminderBadge(
-      label: 'Sắp đóng',
-      background: Color(0xFFFFF1DD),
-      foreground: Color(0xFFD97706),
-      icon: Icons.warning_amber_rounded,
     );
   }
 }
