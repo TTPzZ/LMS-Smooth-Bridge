@@ -57,7 +57,15 @@ export type LmsStudentAttendanceRecord = {
     status?: string;
     note?: string | null;
     comment?: string | null;
+    commentByAreas?: LmsCommentByAreaRecord[];
     student?: LmsStudent;
+};
+
+export type LmsCommentByAreaRecord = {
+    grade?: number | null;
+    content?: string | null;
+    commentAreaId?: string | null;
+    type?: string | null;
 };
 
 export type LmsClassSite = {
@@ -88,10 +96,33 @@ export type LmsClassRecord = {
     name: string;
     status?: string;
     endDate?: string;
+    courseProcessId?: string;
+    courseProcess?: LmsCourseProcess;
     teachers?: LmsTeacherAssignment[];
     students?: LmsClassStudent[];
     classSites?: LmsClassSite[];
     slots?: LmsSlotRecord[];
+};
+
+export type LmsCourseProcess = {
+    id?: string;
+    defaultCommentAreas?: LmsCommentArea[];
+    specificSessions?: LmsCourseProcessSpecificSession[];
+};
+
+export type LmsCourseProcessSpecificSession = {
+    session?: number;
+    alwaysShow?: boolean;
+    commentAreas?: LmsCommentArea[];
+};
+
+export type LmsCommentArea = {
+    id?: string;
+    name?: string;
+    fieldName?: string;
+    type?: string;
+    slots?: string[];
+    isRequired?: boolean;
 };
 
 export type LmsSlotAttendanceStatus =
@@ -121,6 +152,28 @@ export type LmsSlotAttendanceCommand = {
     classSiteId?: string;
     studentAttendance?: LmsStudentAttendancePayload[];
     teacherAttendance?: LmsTeacherAttendancePayload[];
+};
+
+export type LmsCommentByAreaCommand = {
+    content: string;
+    commentAreaId: string;
+    type?: string;
+};
+
+export type LmsUpdateSlotStudentCommentCommand = {
+    studentAttendanceId: string;
+    studentId: string;
+    content: string;
+    byAreas?: LmsCommentByAreaCommand[];
+};
+
+export type LmsUpdateSlotCommentCommand = {
+    classId: string;
+    slotId: string;
+    classSiteId?: string;
+    sessionNumber?: number;
+    courseProcessId?: string;
+    studentComment: LmsUpdateSlotStudentCommentCommand;
 };
 
 export type LmsTimesheetClass = {

@@ -2,6 +2,7 @@ import axios from 'axios';
 import { env } from '../config/env';
 import {
     LmsClassRecord,
+    LmsUpdateSlotCommentCommand,
     LmsSlotAttendanceCommand,
     LmsTeacherProfile,
     LmsTimesheetItem
@@ -418,6 +419,46 @@ export class LmsService {
                   name
                   status
                   endDate
+                  courseProcessId
+                  classSites {
+                    _id
+                    name
+                  }
+                  courseProcess {
+                    id
+                    defaultCommentAreas {
+                      id
+                      name
+                      fieldName
+                      type
+                      slots
+                      isRequired
+                    }
+                    specificSessions {
+                      session
+                      alwaysShow
+                      commentAreas {
+                        id
+                        name
+                        fieldName
+                        type
+                        slots
+                        isRequired
+                      }
+                    }
+                  }
+                  students {
+                    _id
+                    activeInClass
+                    classSite {
+                      _id
+                      name
+                    }
+                    student {
+                      id
+                      fullName
+                    }
+                  }
                   teachers {
                     _id
                     isActive
@@ -455,6 +496,13 @@ export class LmsService {
                     studentAttendance {
                       _id
                       status
+                      comment
+                      commentByAreas {
+                        grade
+                        content
+                        commentAreaId
+                        type
+                      }
                       student {
                         id
                         fullName
@@ -602,9 +650,33 @@ export class LmsService {
                   name
                   status
                   endDate
+                  courseProcessId
                   classSites {
                     _id
                     name
+                  }
+                  courseProcess {
+                    id
+                    defaultCommentAreas {
+                      id
+                      name
+                      fieldName
+                      type
+                      slots
+                      isRequired
+                    }
+                    specificSessions {
+                      session
+                      alwaysShow
+                      commentAreas {
+                        id
+                        name
+                        fieldName
+                        type
+                        slots
+                        isRequired
+                      }
+                    }
                   }
                   students {
                     _id
@@ -658,6 +730,12 @@ export class LmsService {
                       _id
                       status
                       comment
+                      commentByAreas {
+                        grade
+                        content
+                        commentAreaId
+                        type
+                      }
                       student {
                         id
                         fullName
@@ -735,6 +813,44 @@ export class LmsService {
         const updatedClassId = responseData?.data?.classes?.updateSlotAttendance?.id;
         if (!updatedClassId) {
             throw new Error('Khong nhan duoc phan hoi updateSlotAttendance hop le');
+        }
+
+        return {
+            classId: updatedClassId
+        };
+    }
+
+    async updateSlotComment(
+        payload: LmsUpdateSlotCommentCommand,
+        idTokenOverride?: string
+    ): Promise<{ classId: string }> {
+        const graphqlMutation = {
+            operationName: 'UpdateSlotComment',
+            query: `mutation UpdateSlotComment($payload: UpdateSlotCommentCommand!) {
+              classes {
+                updateSlotComment(payload: $payload) {
+                  id
+                }
+              }
+            }`,
+            variables: {
+                payload
+            }
+        };
+
+        const responseData = await this.callLmsGraphqlWithAutoRefresh<{
+            data?: {
+                classes?: {
+                    updateSlotComment?: {
+                        id?: string;
+                    } | null;
+                };
+            };
+        }>(graphqlMutation, idTokenOverride);
+
+        const updatedClassId = responseData?.data?.classes?.updateSlotComment?.id;
+        if (!updatedClassId) {
+            throw new Error('Khong nhan duoc phan hoi updateSlotComment hop le');
         }
 
         return {
