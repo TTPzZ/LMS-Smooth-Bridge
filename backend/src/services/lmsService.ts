@@ -455,6 +455,16 @@ export class LmsService {
                         fullName
                       }
                     }
+                    teacherAttendance {
+                      _id
+                      status
+                      note
+                      teacher {
+                        id
+                        username
+                        fullName
+                      }
+                    }
                   }
                 }
               }

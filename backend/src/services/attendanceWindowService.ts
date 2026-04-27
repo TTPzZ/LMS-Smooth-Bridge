@@ -4,6 +4,8 @@ import { LmsClassRecord, LmsSlotRecord, LmsTeacherAssignment } from '../types/lm
 type ReminderPrincipal = {
     teacherId?: string | null;
     username?: string | null;
+    usernames?: string[];
+    fullName?: string | null;
 };
 
 export type SlotAttendanceWindow = {
@@ -54,6 +56,13 @@ function normalizeIdentity(value: string | null | undefined): string {
     return String(value ?? '').trim().toLowerCase();
 }
 
+function normalizeComparable(value: string | null | undefined): string {
+    return normalizeIdentity(value)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]/g, '');
+}
+
 function deriveUsernameFromEmail(value: string | null | undefined): string {
     const raw = normalizeIdentity(value);
     if (!raw) {
@@ -80,31 +89,66 @@ function resolveRoleForPrincipal(
     }
 
     const principalTeacherId = normalizeIdentity(principal?.teacherId);
-    const principalUsername = normalizeIdentity(principal?.username);
-    const principalDerivedUsername = deriveUsernameFromEmail(principal?.username);
+    const principalUsernames = new Set(
+        (principal?.usernames || [principal?.username || ''])
+            .map((item) => normalizeIdentity(item))
+            .filter(Boolean)
+    );
+    const principalDerivedUsernames = new Set(
+        Array.from(principalUsernames)
+            .map((item) => deriveUsernameFromEmail(item))
+            .filter(Boolean)
+    );
+    const principalComparableFullName = normalizeComparable(principal?.fullName);
+    const hasPrincipalIdentity = Boolean(
+        principalTeacherId
+        || principalUsernames.size > 0
+        || principalComparableFullName
+    );
 
     const isMatch = (assignment: LmsTeacherAssignment): boolean => {
         const teacherId = normalizeIdentity(assignment.teacher?.id);
         const teacherUsername = normalizeIdentity(assignment.teacher?.username);
+        const teacherComparableFullName = normalizeComparable(assignment.teacher?.fullName);
         if (principalTeacherId && teacherId && principalTeacherId === teacherId) {
             return true;
         }
-        if (principalUsername && teacherUsername && principalUsername === teacherUsername) {
+        if (teacherUsername && principalUsernames.has(teacherUsername)) {
             return true;
         }
-        if (principalDerivedUsername && teacherUsername && principalDerivedUsername === teacherUsername) {
+        if (teacherUsername && principalDerivedUsernames.has(teacherUsername)) {
+            return true;
+        }
+        if (
+            principalComparableFullName
+            && teacherComparableFullName
+            && principalComparableFullName === teacherComparableFullName
+        ) {
             return true;
         }
         return false;
     };
 
     const matched = assignments.find(isMatch);
+    if (matched) {
+        return {
+            roleName: matched.role?.name || null,
+            roleShortName: matched.role?.shortName || null
+        };
+    }
+
+    if (hasPrincipalIdentity) {
+        return {
+            roleName: null,
+            roleShortName: null
+        };
+    }
+
     const fallback = assignments.find((item) => item.isActive) || assignments[0];
-    const picked = matched || fallback;
 
     return {
-        roleName: picked.role?.name || null,
-        roleShortName: picked.role?.shortName || null
+        roleName: fallback.role?.name || null,
+        roleShortName: fallback.role?.shortName || null
     };
 }
 

@@ -9,7 +9,7 @@ import {
     toPublicAttendanceWindow
 } from '../services/attendanceWindowService';
 import { parseBearerToken, parseBooleanQuery, parseIntegerQuery, sanitizePositiveInt } from '../utils/requestParsers';
-import { LmsClassRecord } from '../types/lms';
+import { LmsClassRecord, LmsTeacherAssignment, LmsTeacherAttendanceRecord } from '../types/lms';
 import { decodeJwtPayload } from '../utils/jwt';
 
 function collectStudents(cls: LmsClassRecord): string[] {
@@ -25,6 +25,170 @@ function collectStudents(cls: LmsClassRecord): string[] {
     });
 
     return Array.from(studentMap.values());
+}
+
+type ReminderPrincipal = {
+    teacherId?: string | null;
+    username?: string | null;
+    usernames?: string[];
+    fullName?: string | null;
+};
+
+function normalizeIdentity(value: string | null | undefined): string {
+    return String(value ?? '').trim().toLowerCase();
+}
+
+function normalizeComparable(value: string | null | undefined): string {
+    return normalizeIdentity(value)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]/g, '');
+}
+
+function deriveUsernameFromEmail(value: string | null | undefined): string {
+    const raw = normalizeIdentity(value);
+    if (!raw) {
+        return '';
+    }
+
+    const at = raw.indexOf('@');
+    if (at <= 0) {
+        return raw;
+    }
+
+    return raw.substring(0, at);
+}
+
+function isPrincipalTeacher(
+    assignment: LmsTeacherAssignment,
+    principal?: ReminderPrincipal | null
+): boolean {
+    const principalTeacherId = normalizeIdentity(principal?.teacherId);
+    const principalUsernames = new Set(
+        (principal?.usernames || [principal?.username || ''])
+            .map((item) => normalizeIdentity(item))
+            .filter(Boolean)
+    );
+    const principalDerivedUsernames = new Set(
+        Array.from(principalUsernames)
+            .map((item) => deriveUsernameFromEmail(item))
+            .filter(Boolean)
+    );
+    const principalComparableFullName = normalizeComparable(principal?.fullName);
+    const teacherId = normalizeIdentity(assignment.teacher?.id);
+    const teacherUsername = normalizeIdentity(assignment.teacher?.username);
+    const teacherComparableFullName = normalizeComparable(assignment.teacher?.fullName);
+
+    if (principalTeacherId && teacherId && principalTeacherId === teacherId) {
+        return true;
+    }
+
+    if (teacherUsername && principalUsernames.has(teacherUsername)) {
+        return true;
+    }
+
+    if (teacherUsername && principalDerivedUsernames.has(teacherUsername)) {
+        return true;
+    }
+
+    if (
+        principalComparableFullName
+        && teacherComparableFullName
+        && principalComparableFullName === teacherComparableFullName
+    ) {
+        return true;
+    }
+
+    return false;
+}
+
+function collectCoTeachers(
+    cls: LmsClassRecord,
+    principal?: ReminderPrincipal | null
+): string[] {
+    const coTeacherMap = new Map<string, string>();
+    const assignments: LmsTeacherAssignment[] = [
+        ...(cls.teachers || []),
+        ...((cls.slots || []).flatMap((slot) => slot.teachers || []))
+    ];
+
+    const pushCoTeacher = (assignment: LmsTeacherAssignment) => {
+        if (assignment.isActive === false) {
+            return;
+        }
+
+        if (isPrincipalTeacher(assignment, principal)) {
+            return;
+        }
+
+        const teacher = assignment.teacher;
+        const fullName = String(teacher?.fullName || '').trim();
+        const username = String(teacher?.username || '').trim();
+        const displayName = String(
+            fullName && username && normalizeIdentity(fullName) !== normalizeIdentity(username)
+                ? `${fullName} (${username})`
+                : fullName || username || teacher?.id || ''
+        ).trim();
+        if (!displayName) {
+            return;
+        }
+
+        const dedupeKey = normalizeIdentity(teacher?.id)
+            || normalizeIdentity(teacher?.username)
+            || normalizeIdentity(displayName);
+        if (!dedupeKey) {
+            return;
+        }
+
+        coTeacherMap.set(dedupeKey, displayName);
+    };
+
+    assignments.forEach(pushCoTeacher);
+
+    (cls.slots || []).forEach((slot) => {
+        (slot.teacherAttendance || []).forEach((attendance: LmsTeacherAttendanceRecord) => {
+            pushCoTeacher({
+                isActive: true,
+                teacher: attendance.teacher
+            });
+        });
+    });
+
+    return Array.from(coTeacherMap.values());
+}
+
+function readPrincipal(req: Request, idTokenFromHeader: string | null | undefined): ReminderPrincipal {
+    const tokenPayload = idTokenFromHeader ? decodeJwtPayload(idTokenFromHeader) : null;
+    const usernameFromQuery = typeof req.query.username === 'string'
+        ? req.query.username.trim()
+        : '';
+    const usernameFromToken = typeof tokenPayload?.username === 'string'
+        ? tokenPayload.username.trim()
+        : '';
+    const emailFromToken = typeof tokenPayload?.email === 'string'
+        ? tokenPayload.email.trim()
+        : '';
+    const derivedFromEmail = deriveUsernameFromEmail(emailFromToken);
+
+    const usernames = Array.from(new Set([
+        usernameFromQuery,
+        usernameFromToken,
+        emailFromToken,
+        derivedFromEmail
+    ].map((item) => item.trim()).filter(Boolean)));
+
+    return {
+        teacherId: typeof tokenPayload?.user_id === 'string'
+            ? tokenPayload.user_id.trim()
+            : typeof tokenPayload?.sub === 'string'
+                ? tokenPayload.sub.trim()
+                : null,
+        username: usernames[0] || null,
+        usernames,
+        fullName: typeof tokenPayload?.name === 'string'
+            ? tokenPayload.name.trim()
+            : null
+    };
 }
 
 export function createClassRouter(lmsService: LmsService): Router {
@@ -47,19 +211,7 @@ export function createClassRouter(lmsService: LmsService): Router {
             const activeOnly = parseBooleanQuery(req.query.activeOnly, true);
             const now = new Date();
             const nowMs = now.getTime();
-            const tokenPayload = idTokenFromHeader ? decodeJwtPayload(idTokenFromHeader) : null;
-            const principal = {
-                teacherId: typeof tokenPayload?.user_id === 'string'
-                    ? tokenPayload.user_id.trim()
-                    : typeof tokenPayload?.sub === 'string'
-                        ? tokenPayload.sub.trim()
-                        : null,
-                username: typeof tokenPayload?.username === 'string'
-                    ? tokenPayload.username.trim()
-                    : typeof tokenPayload?.email === 'string'
-                        ? tokenPayload.email.trim()
-                        : null
-            };
+            const principal = readPrincipal(req, idTokenFromHeader);
 
             const {
                 classes,
@@ -72,6 +224,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                 .filter((cls) => (activeOnly ? isRunningClass(cls, now) : true))
                 .map((cls) => {
                     const students = collectStudents(cls);
+                    const coTeachers = collectCoTeachers(cls, principal);
                     const upcomingWindows = getClassAttendanceWindows(cls, nowMs, principal)
                         .filter((window) => window.attendanceCloseAtMs >= nowMs);
                     const nextAttendanceWindow = upcomingWindows.length > 0
@@ -89,6 +242,8 @@ export function createClassRouter(lmsService: LmsService): Router {
                         isClassEnded,
                         totalStudents: students.length,
                         students,
+                        totalCoTeachers: coTeachers.length,
+                        coTeachers,
                         totalSlots: (cls.slots || []).length,
                         nextAttendanceWindow
                     };
@@ -139,19 +294,7 @@ export function createClassRouter(lmsService: LmsService): Router {
             const now = new Date();
             const nowMs = now.getTime();
             const lookAheadUntilMs = nowMs + lookAheadMinutes * 60_000;
-            const tokenPayload = idTokenFromHeader ? decodeJwtPayload(idTokenFromHeader) : null;
-            const principal = {
-                teacherId: typeof tokenPayload?.user_id === 'string'
-                    ? tokenPayload.user_id.trim()
-                    : typeof tokenPayload?.sub === 'string'
-                        ? tokenPayload.sub.trim()
-                        : null,
-                username: typeof tokenPayload?.username === 'string'
-                    ? tokenPayload.username.trim()
-                    : typeof tokenPayload?.email === 'string'
-                        ? tokenPayload.email.trim()
-                        : null
-            };
+            const principal = readPrincipal(req, idTokenFromHeader);
 
             const {
                 classes,
