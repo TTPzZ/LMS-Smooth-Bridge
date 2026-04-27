@@ -1200,6 +1200,12 @@ export function createClassRouter(lmsService: LmsService): Router {
                 const richContent = String(commentByArea?.content ?? '').trim();
                 const scoreSource = richContent || String(attendance?.comment ?? attendance?.note ?? '').trim();
                 const scoreData = scoreSource ? extractScoresFromCommentHtml(scoreSource) : {};
+                const narrativeSource = richContent
+                    || String(attendance?.comment ?? '').trim()
+                    || String(attendance?.note ?? '').trim();
+                const narrativeComment = narrativeSource
+                    ? extractNarrativeCommentFromHtml(narrativeSource)
+                    : normalizeCommentText(attendance?.note);
 
                 upsertComment({
                     key: buildStudentCommentKey(student),
@@ -1213,9 +1219,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                     kienThucScore: scoreData.kienThucScore,
                     kyNangScore: scoreData.kyNangScore,
                     thaiDoScore: scoreData.thaiDoScore,
-                    comment: attendance?.note
-                        ?? attendance?.comment
-                        ?? (richContent ? extractNarrativeCommentFromHtml(richContent) : '')
+                    comment: narrativeComment
                 });
             });
 
@@ -1232,6 +1236,12 @@ export function createClassRouter(lmsService: LmsService): Router {
                 const richContent = String(commentByArea?.content ?? '').trim();
                 const scoreSource = richContent || String(attendance.comment ?? attendance.note ?? '').trim();
                 const scoreData = scoreSource ? extractScoresFromCommentHtml(scoreSource) : {};
+                const narrativeSource = richContent
+                    || String(attendance.comment ?? '').trim()
+                    || String(attendance.note ?? '').trim();
+                const narrativeComment = narrativeSource
+                    ? extractNarrativeCommentFromHtml(narrativeSource)
+                    : normalizeCommentText(attendance.note);
 
                 upsertComment({
                     key: buildStudentCommentKey(student, name),
@@ -1245,9 +1255,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                     kienThucScore: scoreData.kienThucScore,
                     kyNangScore: scoreData.kyNangScore,
                     thaiDoScore: scoreData.thaiDoScore,
-                    comment: attendance.note
-                        ?? attendance.comment
-                        ?? (richContent ? extractNarrativeCommentFromHtml(richContent) : '')
+                    comment: narrativeComment
                 });
             });
 
