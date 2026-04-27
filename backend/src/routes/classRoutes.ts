@@ -457,7 +457,7 @@ function buildCommentHtmlFromScores(scores: {
 
     const normalizedComment = normalizeCommentText(fallbackComment);
     if (normalizedComment) {
-        lines.push(`<p><b>NHAN XET:</b> ${escapeHtmlText(normalizedComment)}</p>`);
+        lines.push(`<p>${escapeHtmlText(normalizedComment)}</p>`);
     }
 
     if (lines.length === 0) {
