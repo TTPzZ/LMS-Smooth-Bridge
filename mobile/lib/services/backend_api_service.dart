@@ -237,4 +237,56 @@ class BackendApiService {
 
     return AttendanceSaveResult.fromJson(data);
   }
+
+  Future<List<AttendanceCommentItem>> getSlotAttendanceComments({
+    required String classId,
+    required String slotId,
+  }) async {
+    final json = await _getJson(
+      '/attendance/slot/comments',
+      query: {
+        'classId': classId,
+        'slotId': slotId,
+      },
+    );
+
+    final data = json['data'];
+    if (data is! Map<String, dynamic>) {
+      return const [];
+    }
+
+    final comments = data['comments'];
+    if (comments is! List) {
+      return const [];
+    }
+
+    return comments
+        .whereType<Map>()
+        .map((e) => AttendanceCommentItem.fromJson(
+              e.map((key, value) => MapEntry(key.toString(), value)),
+            ))
+        .toList();
+  }
+
+  Future<AttendanceCommentSaveResult> saveSlotAttendanceComments({
+    required String classId,
+    required String slotId,
+    required List<AttendanceCommentItem> comments,
+  }) async {
+    final json = await _postJson(
+      '/attendance/slot/comments',
+      body: {
+        'classId': classId,
+        'slotId': slotId,
+        'comments': comments.map((item) => item.toJson()).toList(),
+      },
+    );
+
+    final data = json['data'];
+    if (data is! Map<String, dynamic>) {
+      throw ApiException('Invalid attendance comment save response');
+    }
+
+    return AttendanceCommentSaveResult.fromJson(data);
+  }
 }

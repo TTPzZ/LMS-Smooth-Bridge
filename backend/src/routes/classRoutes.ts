@@ -1084,7 +1084,8 @@ export function createClassRouter(lmsService: LmsService): Router {
             const command: LmsSlotAttendanceCommand = {
                 classId,
                 slotId,
-                studentAttendance: Array.from(studentPayloadMap.values())
+                studentAttendance: Array.from(studentPayloadMap.values()),
+                teacherAttendance: []
             };
 
             const totalApplied = (command.studentAttendance || []).length;

@@ -62,6 +62,7 @@ class ClassSummary {
   final String classId;
   final String className;
   final String? status;
+  final String? classStartDate;
   final String? classEndDate;
   final bool isClassEnded;
   final int totalStudents;
@@ -74,6 +75,7 @@ class ClassSummary {
     required this.classId,
     required this.className,
     required this.status,
+    required this.classStartDate,
     required this.classEndDate,
     required this.isClassEnded,
     required this.totalStudents,
@@ -89,6 +91,7 @@ class ClassSummary {
       classId: (json['classId'] ?? '').toString(),
       className: (json['className'] ?? '').toString(),
       status: json['status']?.toString(),
+      classStartDate: json['classStartDate']?.toString(),
       classEndDate: json['classEndDate']?.toString(),
       isClassEnded: json['isClassEnded'] == true,
       totalStudents: _asInt(json['totalStudents']),
@@ -106,6 +109,7 @@ class ClassSummary {
       'classId': classId,
       'className': className,
       'status': status,
+      'classStartDate': classStartDate,
       'classEndDate': classEndDate,
       'isClassEnded': isClassEnded,
       'totalStudents': totalStudents,
@@ -278,6 +282,94 @@ class AttendanceSaveResult {
       unresolvedParticipants: _asMapList(
         json['unresolvedParticipants'],
       ).map(AttendanceUnresolvedParticipant.fromJson).toList(),
+    );
+  }
+}
+
+class AttendanceCommentItem {
+  final String key;
+  final String name;
+  final String? studentId;
+  final String comment;
+
+  AttendanceCommentItem({
+    required this.key,
+    required this.name,
+    required this.studentId,
+    required this.comment,
+  });
+
+  factory AttendanceCommentItem.fromJson(Map<String, dynamic> json) {
+    return AttendanceCommentItem(
+      key: (json['key'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      studentId: json['studentId']?.toString(),
+      comment: (json['comment'] ?? '').toString(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'key': key,
+      'name': name,
+      'studentId': studentId,
+      'comment': comment,
+    };
+  }
+}
+
+class AttendanceCommentUnresolvedParticipant {
+  final String key;
+  final String name;
+  final String reason;
+
+  AttendanceCommentUnresolvedParticipant({
+    required this.key,
+    required this.name,
+    required this.reason,
+  });
+
+  factory AttendanceCommentUnresolvedParticipant.fromJson(
+    Map<String, dynamic> json,
+  ) {
+    return AttendanceCommentUnresolvedParticipant(
+      key: (json['key'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      reason: (json['reason'] ?? '').toString(),
+    );
+  }
+}
+
+class AttendanceCommentSaveResult {
+  final String classId;
+  final String slotId;
+  final int requestedComments;
+  final int appliedComments;
+  final int updatedStudents;
+  final List<String> appliedParticipantKeys;
+  final List<AttendanceCommentUnresolvedParticipant> unresolvedParticipants;
+
+  AttendanceCommentSaveResult({
+    required this.classId,
+    required this.slotId,
+    required this.requestedComments,
+    required this.appliedComments,
+    required this.updatedStudents,
+    required this.appliedParticipantKeys,
+    required this.unresolvedParticipants,
+  });
+
+  factory AttendanceCommentSaveResult.fromJson(Map<String, dynamic> json) {
+    return AttendanceCommentSaveResult(
+      classId: (json['classId'] ?? '').toString(),
+      slotId: (json['slotId'] ?? '').toString(),
+      requestedComments: _asInt(json['requestedComments']),
+      appliedComments: _asInt(json['appliedComments']),
+      updatedStudents: _asInt(json['updatedStudents']),
+      appliedParticipantKeys: _asStringList(json['appliedParticipantKeys']),
+      unresolvedParticipants: _asMapList(
+        json['unresolvedParticipants'],
+      ).map(AttendanceCommentUnresolvedParticipant.fromJson).toList(),
     );
   }
 }

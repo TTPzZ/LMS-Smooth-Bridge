@@ -67,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   late Future<List<ClassSummary>> _classesFuture;
   late Future<List<ReminderItem>> _remindersFuture;
+  late Future<List<Object>> _classesAndRemindersFuture;
   late Future<PayrollResponse> _payrollFuture;
 
   late AuthSession _session;
@@ -79,6 +80,14 @@ class _HomeScreenState extends State<HomeScreen> {
       _attendanceSavedSnapshotByClassId = {};
   final Map<String, DateTime> _attendanceSavedAtByClassId = {};
   final Map<String, bool> _attendanceSavingByClassId = {};
+  final Map<String, _ClassCardSection?> _classSectionByClassId = {};
+  final Map<String, List<_StudentCommentDraft>> _studentCommentDraftByClassId =
+      {};
+  final Map<String, String> _studentCommentSlotByClassId = {};
+  final Map<String, bool> _studentCommentLoadingByClassId = {};
+  final Map<String, bool> _studentCommentSavingByClassId = {};
+  final Map<String, String?> _studentCommentSavingDraftKeyByClassId = {};
+  final Map<String, String?> _studentCommentErrorByClassId = {};
 
   @override
   void initState() {
@@ -252,6 +261,10 @@ class _HomeScreenState extends State<HomeScreen> {
         username: username,
         forceNetwork: forceNetwork,
       );
+      _classesAndRemindersFuture = Future.wait<Object>([
+        _classesFuture,
+        _remindersFuture,
+      ]);
       _payrollFuture = _loadPayroll(
         username: username,
         month: _selectedPayrollMonth,
@@ -591,16 +604,240 @@ class _HomeScreenState extends State<HomeScreen> {
     return parsed.millisecondsSinceEpoch;
   }
 
-  String _formatCompactCountdownToClass(String? slotStartTime) {
+  String _formatDayHourMinuteCountdown(String? slotStartTime) {
     final start = _parseDateTimeLoose(slotStartTime);
     if (start == null) {
       return '--';
     }
 
-    return _formatDurationMinutesVi(
-      start.difference(DateTime.now()).inMinutes,
-      compact: true,
-    );
+    var totalMinutes = start.difference(DateTime.now()).inMinutes;
+    if (totalMinutes < 0) {
+      totalMinutes = 0;
+    }
+
+    final days = totalMinutes ~/ (24 * 60);
+    final hours = (totalMinutes % (24 * 60)) ~/ 60;
+    final mins = totalMinutes % 60;
+
+    if (days > 0) {
+      return '${days}d ${hours}h ${mins}m';
+    }
+    if (hours > 0) {
+      return '${hours}h ${mins}m';
+    }
+    return '${mins}m';
+  }
+
+  void _toggleClassSection({
+    required String classId,
+    required _ClassCardSection section,
+  }) {
+    setState(() {
+      final current = _classSectionByClassId.containsKey(classId)
+          ? _classSectionByClassId[classId]
+          : null;
+      if (current == section) {
+        _classSectionByClassId[classId] = null;
+      } else {
+        _classSectionByClassId[classId] = section;
+      }
+    });
+  }
+
+  List<_StudentCommentDraft> _fallbackStudentComments(
+    List<String> studentNames,
+  ) {
+    final seen = <String>{};
+    final drafts = <_StudentCommentDraft>[];
+    for (final rawName in studentNames) {
+      final name = rawName.trim();
+      if (name.isEmpty || !seen.add(name.toLowerCase())) {
+        continue;
+      }
+      drafts.add(
+        _StudentCommentDraft(
+          key: 'student::$name',
+          name: name,
+          studentId: null,
+          comment: '',
+        ),
+      );
+    }
+    return drafts;
+  }
+
+  Future<void> _loadStudentCommentsForClass({
+    required String classId,
+    required String slotId,
+    required List<String> studentNames,
+    bool force = false,
+  }) async {
+    final normalizedSlotId = slotId.trim();
+    if (normalizedSlotId.isEmpty) {
+      setState(() {
+        _studentCommentDraftByClassId[classId] =
+            _fallbackStudentComments(studentNames);
+        _studentCommentSlotByClassId.remove(classId);
+        _studentCommentErrorByClassId[classId] =
+            'Chua co slot sap toi de lay nhan xet.';
+      });
+      return;
+    }
+
+    final alreadyLoaded =
+        _studentCommentSlotByClassId[classId] == normalizedSlotId &&
+            _studentCommentDraftByClassId.containsKey(classId) &&
+            _studentCommentErrorByClassId[classId] == null;
+    if (!force && alreadyLoaded) {
+      return;
+    }
+
+    setState(() {
+      _studentCommentLoadingByClassId[classId] = true;
+      _studentCommentErrorByClassId[classId] = null;
+    });
+
+    try {
+      final comments = await _api.getSlotAttendanceComments(
+        classId: classId,
+        slotId: normalizedSlotId,
+      );
+      final drafts = comments.isNotEmpty
+          ? comments
+              .map(
+                (item) => _StudentCommentDraft(
+                  key: item.key,
+                  name: item.name,
+                  studentId: item.studentId,
+                  comment: item.comment,
+                ),
+              )
+              .toList()
+          : _fallbackStudentComments(studentNames);
+      setState(() {
+        _studentCommentDraftByClassId[classId] = drafts;
+        _studentCommentSlotByClassId[classId] = normalizedSlotId;
+        _studentCommentErrorByClassId[classId] = null;
+      });
+    } catch (error) {
+      setState(() {
+        _studentCommentDraftByClassId[classId] =
+            _studentCommentDraftByClassId[classId] ??
+                _fallbackStudentComments(studentNames);
+        _studentCommentErrorByClassId[classId] =
+            'Khong tai duoc nhan xet: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _studentCommentLoadingByClassId[classId] = false;
+        });
+      }
+    }
+  }
+
+  void _updateStudentCommentDraft({
+    required String classId,
+    required String key,
+    required String comment,
+  }) {
+    final drafts = _studentCommentDraftByClassId[classId];
+    if (drafts == null || drafts.isEmpty) {
+      return;
+    }
+
+    final index = drafts.indexWhere((item) => item.key == key);
+    if (index < 0) {
+      return;
+    }
+
+    setState(() {
+      drafts[index] = drafts[index].copyWith(comment: comment);
+      _studentCommentDraftByClassId[classId] = List<_StudentCommentDraft>.from(
+        drafts,
+      );
+    });
+  }
+
+  Future<void> _saveSingleStudentCommentForClass({
+    required String classId,
+    required String slotId,
+    required _StudentCommentDraft draft,
+    required List<String> studentNames,
+  }) async {
+    final normalizedSlotId = slotId.trim();
+    if (normalizedSlotId.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Chua co slot sap toi de luu nhan xet.'),
+        ),
+      );
+      return;
+    }
+
+    if (_studentCommentSavingByClassId[classId] == true) {
+      return;
+    }
+
+    setState(() {
+      _studentCommentSavingByClassId[classId] = true;
+      _studentCommentSavingDraftKeyByClassId[classId] = draft.key;
+      _studentCommentErrorByClassId[classId] = null;
+    });
+
+    try {
+      final result = await _api.saveSlotAttendanceComments(
+        classId: classId,
+        slotId: normalizedSlotId,
+        comments: [
+          AttendanceCommentItem(
+            key: draft.key,
+            name: draft.name,
+            studentId: draft.studentId,
+            comment: draft.comment,
+          ),
+        ],
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      final unresolved = result.unresolvedParticipants.length;
+      final message = unresolved > 0
+          ? 'Luu nhan xet cho ${draft.name} chua thanh cong ($unresolved loi map).'
+          : 'Da luu nhan xet cho ${draft.name} len LMS.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+
+      await _loadStudentCommentsForClass(
+        classId: classId,
+        slotId: normalizedSlotId,
+        studentNames: studentNames,
+        force: true,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _studentCommentErrorByClassId[classId] = error.toString();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Luu nhan xet that bai: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _studentCommentSavingByClassId[classId] = false;
+          _studentCommentSavingDraftKeyByClassId.remove(classId);
+        });
+      }
+    }
   }
 
   String _attendanceParticipantKey({
@@ -1121,10 +1358,7 @@ class _HomeScreenState extends State<HomeScreen> {
     return RefreshIndicator(
       onRefresh: _forceRefreshAll,
       child: FutureBuilder<List<Object>>(
-        future: Future.wait<Object>([
-          _classesFuture,
-          _remindersFuture,
-        ]),
+        future: _classesAndRemindersFuture,
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -1139,7 +1373,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? payload.first as List<ClassSummary>
                 : const <ClassSummary>[],
           )..sort((a, b) => a.className.compareTo(b.className));
-
           final reminders = List<ReminderItem>.from(
             payload.length > 1 && payload[1] is List<ReminderItem>
                 ? payload[1] as List<ReminderItem>
@@ -1207,6 +1440,7 @@ class _HomeScreenState extends State<HomeScreen> {
           });
 
           return ListView.separated(
+            key: const PageStorageKey<String>('classes_list_view'),
             physics: const AlwaysScrollableScrollPhysics(),
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
             itemCount: classes.length,
@@ -1250,6 +1484,10 @@ class _HomeScreenState extends State<HomeScreen> {
 
               addParticipants(cls.students, isCoTeacher: false);
               addParticipants(cls.coTeachers, isCoTeacher: true);
+              final studentNames = cls.students
+                  .map((item) => item.trim())
+                  .where((item) => item.isNotEmpty)
+                  .toList();
 
               final presentCount = _countAttendanceStatus(
                 classId: cls.classId,
@@ -1281,8 +1519,38 @@ class _HomeScreenState extends State<HomeScreen> {
               final saveSlotId = (nextReminder?.slotId.isNotEmpty == true)
                   ? nextReminder!.slotId
                   : (cls.nextAttendanceWindow?.slotId ?? '');
+              final nextClassStartTime = nextReminder?.slotStartTime ??
+                  cls.nextAttendanceWindow?.slotStartTime;
+              final countdownBadge =
+                  _formatDayHourMinuteCountdown(nextClassStartTime);
+              final selectedSection =
+                  _classSectionByClassId.containsKey(cls.classId)
+                      ? _classSectionByClassId[cls.classId]
+                      : null;
+              final commentDrafts =
+                  _studentCommentDraftByClassId[cls.classId] ??
+                      const <_StudentCommentDraft>[];
+              final isLoadingComments =
+                  _studentCommentLoadingByClassId[cls.classId] == true;
+              final isSavingComments =
+                  _studentCommentSavingByClassId[cls.classId] == true;
+              final savingDraftKey =
+                  _studentCommentSavingDraftKeyByClassId[cls.classId];
+              final commentsError = _studentCommentErrorByClassId[cls.classId];
+              final classStartLabel = _formatDateTime(cls.classStartDate);
+              final classEndLabel = _formatDateTime(cls.classEndDate);
+              final isAttendanceWindowOpen = nextReminder?.isWindowOpen ??
+                  cls.nextAttendanceWindow?.isWindowOpen ??
+                  false;
+              final attendanceRemainingLabel = isAttendanceWindowOpen
+                  ? 'Con ${_formatDurationMinutesVi(nextReminder?.minutesUntilWindowClose ?? cls.nextAttendanceWindow?.minutesUntilWindowClose ?? 0, compact: true)} de diem danh'
+                  : (nextClassStartTime != null &&
+                          nextClassStartTime.trim().isNotEmpty
+                      ? 'Con ${_formatDayHourMinuteCountdown(nextClassStartTime)} den buoi hoc tiep theo'
+                      : 'Chua co buoi hoc tiep theo');
 
               return Card(
+                key: ValueKey<String>('class_card_${cls.classId}'),
                 child: Padding(
                   padding: const EdgeInsets.all(14),
                   child: Column(
@@ -1297,10 +1565,10 @@ class _HomeScreenState extends State<HomeScreen> {
                             ),
                           ),
                           _Pill(
-                            label: (cls.status ?? 'RUNNING').toUpperCase(),
+                            label: countdownBadge,
                             background: const Color(0xFFE3EEFF),
                             foreground: const Color(0xFF154EA3),
-                            icon: Icons.circle,
+                            icon: Icons.schedule_rounded,
                           ),
                         ],
                       ),
@@ -1318,12 +1586,6 @@ class _HomeScreenState extends State<HomeScreen> {
                               icon: Icons.groups_rounded,
                               label: '${cls.coTeachers.length} đồng giáo viên',
                             ),
-                          if (nextReminder != null)
-                            _MiniStat(
-                              icon: Icons.timer_rounded,
-                              label:
-                                  'Tới lớp: ${_formatCompactCountdownToClass(nextReminder.slotStartTime)}',
-                            ),
                         ],
                       ),
                       if (cls.coTeachers.isNotEmpty) ...[
@@ -1337,9 +1599,75 @@ class _HomeScreenState extends State<HomeScreen> {
                                   ),
                         ),
                       ],
-                      const SizedBox(height: 10),
-                      if (nextReminder != null) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF3F6FC),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: _ClassSectionButton(
+                                label: 'Chi tiết',
+                                icon: Icons.info_outline_rounded,
+                                selected: selectedSection ==
+                                    _ClassCardSection.details,
+                                onPressed: () {
+                                  _toggleClassSection(
+                                    classId: cls.classId,
+                                    section: _ClassCardSection.details,
+                                  );
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: _ClassSectionButton(
+                                label: 'Điểm danh',
+                                icon: Icons.fact_check_outlined,
+                                selected: selectedSection ==
+                                    _ClassCardSection.attendance,
+                                onPressed: () {
+                                  _toggleClassSection(
+                                    classId: cls.classId,
+                                    section: _ClassCardSection.attendance,
+                                  );
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Expanded(
+                              child: _ClassSectionButton(
+                                label: 'Nhận xét',
+                                icon: Icons.edit_note_rounded,
+                                selected:
+                                    selectedSection == _ClassCardSection.note,
+                                onPressed: () {
+                                  final isActive =
+                                      selectedSection == _ClassCardSection.note;
+                                  _toggleClassSection(
+                                    classId: cls.classId,
+                                    section: _ClassCardSection.note,
+                                  );
+                                  if (!isActive) {
+                                    _loadStudentCommentsForClass(
+                                      classId: cls.classId,
+                                      slotId: saveSlotId,
+                                      studentNames: studentNames,
+                                    );
+                                  }
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      if (selectedSection != null) const SizedBox(height: 10),
+                      if (selectedSection == _ClassCardSection.details) ...[
                         Container(
+                          width: double.infinity,
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
                             color: const Color(0xFFF3F7FF),
@@ -1349,7 +1677,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                'Buổi sắp tới',
+                                'Thong tin lop hoc',
                                 style: Theme.of(context)
                                     .textTheme
                                     .titleSmall
@@ -1359,215 +1687,318 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                               ),
                               const SizedBox(height: 6),
-                              Text('Role của bạn: $roleLabel'),
-                              Text(
-                                'Thời gian buổi học: ${_formatDateTime(nextReminder.slotStartTime)} - '
-                                '${_formatDateTime(nextReminder.slotEndTime)}',
+                              Text('So luong hoc vien: ${cls.totalStudents}'),
+                              const SizedBox(height: 4),
+                              Text('Role cua toi: $roleLabel'),
+                              const SizedBox(height: 8),
+                              Text('Bat dau khoa hoc: $classStartLabel'),
+                              const SizedBox(height: 4),
+                              Text('Ket thuc khoa hoc: $classEndLabel'),
+                              const SizedBox(height: 8),
+                              _MiniStat(
+                                icon: isAttendanceWindowOpen
+                                    ? Icons.login_rounded
+                                    : Icons.schedule_rounded,
+                                label: attendanceRemainingLabel,
                               ),
-                              const SizedBox(height: 6),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: [
-                                  _MiniStat(
-                                    icon: Icons.login_rounded,
-                                    label: nextReminder.isWindowOpen
-                                        ? 'Đóng điểm danh sau: ${_formatDurationMinutesVi(nextReminder.minutesUntilWindowClose, compact: true)}'
-                                        : 'Mở điểm danh sau: ${_formatDurationMinutesVi(nextReminder.minutesUntilWindowOpen, compact: true)}',
-                                  ),
-                                  _MiniStat(
-                                    icon: Icons.tag_rounded,
-                                    label:
-                                        'Slot ${nextReminder.slotIndex ?? '-'}',
-                                  ),
-                                ],
-                              ),
+                              if (nextReminder != null) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  'Buoi sap toi: ${_formatDateTime(nextReminder.slotStartTime)} - '
+                                  '${_formatDateTime(nextReminder.slotEndTime)}',
+                                ),
+                                const SizedBox(height: 4),
+                                Text('Slot ${nextReminder.slotIndex ?? '-'}'),
+                              ],
                             ],
                           ),
                         ),
-                      ] else ...[
+                      ] else if (selectedSection ==
+                          _ClassCardSection.attendance) ...[
+                        Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.blueGrey.shade100),
+                          ),
+                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Điểm danh (${participants.length})',
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Co $presentCount · Tre $lateCount · Co phep $excusedCount · Khong phep $unexcusedCount',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                              const SizedBox(height: 8),
+                              if (participants.isEmpty)
+                                const Text(
+                                  'Chưa có học viên/đồng giáo viên để điểm danh.',
+                                )
+                              else ...[
+                                ...participants.map((participant) {
+                                  final status = _attendanceStatusFor(
+                                    classId: cls.classId,
+                                    participantKey: participant.key,
+                                  );
+
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF8FAFF),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                participant.name,
+                                                style: Theme.of(context)
+                                                    .textTheme
+                                                    .bodyMedium
+                                                    ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                    ),
+                                              ),
+                                            ),
+                                            if (participant.isCoTeacher)
+                                              _Pill(
+                                                label: 'Đồng GV',
+                                                background:
+                                                    const Color(0xFFE3EEFF),
+                                                foreground:
+                                                    const Color(0xFF1C4ED8),
+                                                icon: Icons.groups_rounded,
+                                              ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Wrap(
+                                          spacing: 8,
+                                          runSpacing: 8,
+                                          children:
+                                              _AttendanceUiStatus.values.map(
+                                            (option) {
+                                              final isSelected =
+                                                  status == option;
+                                              return Tooltip(
+                                                message: _attendanceStatusLabel(
+                                                  option,
+                                                ),
+                                                triggerMode: TooltipTriggerMode
+                                                    .longPress,
+                                                child: ChoiceChip(
+                                                  label: Icon(
+                                                    _attendanceStatusIcon(
+                                                      option,
+                                                    ),
+                                                    size: 18,
+                                                  ),
+                                                  selected: isSelected,
+                                                  selectedColor:
+                                                      _attendanceStatusColor(
+                                                    option,
+                                                  ).withValues(alpha: 0.18),
+                                                  side: BorderSide(
+                                                    color: isSelected
+                                                        ? _attendanceStatusColor(
+                                                            option,
+                                                          )
+                                                        : Colors
+                                                            .blueGrey.shade200,
+                                                  ),
+                                                  onSelected: (selected) {
+                                                    _setAttendanceStatus(
+                                                      classId: cls.classId,
+                                                      participantKey:
+                                                          participant.key,
+                                                      status: selected
+                                                          ? option
+                                                          : null,
+                                                    );
+                                                  },
+                                                ),
+                                              );
+                                            },
+                                          ).toList(),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                                const SizedBox(height: 4),
+                                SizedBox(
+                                  width: double.infinity,
+                                  child: FilledButton.icon(
+                                    onPressed: participants.isEmpty ||
+                                            isSavingAttendance
+                                        ? null
+                                        : () => _saveAttendanceForClass(
+                                              classId: cls.classId,
+                                              slotId: saveSlotId,
+                                              participants: participants,
+                                            ),
+                                    icon: isSavingAttendance
+                                        ? const SizedBox(
+                                            width: 18,
+                                            height: 18,
+                                            child: CircularProgressIndicator(
+                                              strokeWidth: 2,
+                                            ),
+                                          )
+                                        : const Icon(Icons.save_rounded),
+                                    label: Text(
+                                      isSavingAttendance
+                                          ? 'Đang lưu điểm danh...'
+                                          : 'Lưu kết quả điểm danh',
+                                    ),
+                                  ),
+                                ),
+                                if (savedAt != null) ...[
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    'Đã lưu lúc ${DateFormat('HH:mm:ss - dd/MM/yyyy').format(savedAt)}'
+                                    '${isDirty ? ' · Có thay đổi chưa lưu' : ''}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                          color: isDirty
+                                              ? Colors.orange.shade800
+                                              : Colors.green.shade700,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                  ),
+                                ],
+                              ],
+                            ],
+                          ),
+                        ),
+                      ] else if (selectedSection == _ClassCardSection.note) ...[
                         Container(
                           width: double.infinity,
-                          padding: const EdgeInsets.all(10),
+                          padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
                             color: const Color(0xFFF7F8FB),
                             borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: Colors.blueGrey.shade100),
                           ),
-                          child: const Text(
-                              'Chưa có buổi học sắp tới cho lớp này.'),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Nhan xet tung hoc vien',
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 8),
+                              if (saveSlotId.isEmpty)
+                                const _EmptyLabel(
+                                  message: 'Chua co slot sap toi de nhan xet.',
+                                )
+                              else if (isLoadingComments)
+                                const _InlineLoading()
+                              else if (commentsError != null)
+                                _ErrorLabel(message: commentsError)
+                              else if (commentDrafts.isEmpty)
+                                const _EmptyLabel(
+                                  message:
+                                      'Chua co hoc vien de nhan xet cho slot nay.',
+                                )
+                              else ...[
+                                ...commentDrafts.map((item) {
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 10),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF8FAFF),
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          item.name,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 6),
+                                        TextFormField(
+                                          key: ValueKey<String>(
+                                            'comment_${cls.classId}_${item.key}_$saveSlotId',
+                                          ),
+                                          initialValue: item.comment,
+                                          minLines: 2,
+                                          maxLines: 4,
+                                          decoration: const InputDecoration(
+                                            hintText:
+                                                'Nhap nhan xet cho hoc vien nay',
+                                          ),
+                                          onChanged: (value) {
+                                            _updateStudentCommentDraft(
+                                              classId: cls.classId,
+                                              key: item.key,
+                                              comment: value,
+                                            );
+                                          },
+                                        ),
+                                        const SizedBox(height: 8),
+                                        SizedBox(
+                                          width: double.infinity,
+                                          child: FilledButton.icon(
+                                            onPressed: isSavingComments
+                                                ? null
+                                                : () =>
+                                                    _saveSingleStudentCommentForClass(
+                                                      classId: cls.classId,
+                                                      slotId: saveSlotId,
+                                                      draft: item,
+                                                      studentNames:
+                                                          studentNames,
+                                                    ),
+                                            icon: isSavingComments &&
+                                                    savingDraftKey == item.key
+                                                ? const SizedBox(
+                                                    width: 18,
+                                                    height: 18,
+                                                    child:
+                                                        CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                                  )
+                                                : const Icon(
+                                                    Icons.save_rounded,
+                                                  ),
+                                            label: Text(
+                                              isSavingComments &&
+                                                      savingDraftKey == item.key
+                                                  ? 'Dang luu...'
+                                                  : 'Luu nhan xet hoc vien nay',
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ],
+                            ],
+                          ),
                         ),
                       ],
-                      const SizedBox(height: 12),
-                      Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.blueGrey.shade100),
-                        ),
-                        child: ExpansionTile(
-                          tilePadding:
-                              const EdgeInsets.symmetric(horizontal: 12),
-                          childrenPadding:
-                              const EdgeInsets.fromLTRB(12, 0, 12, 10),
-                          title: Text('Điểm danh (${participants.length})'),
-                          subtitle: Text(
-                            'Có $presentCount · Trễ $lateCount · Có phép $excusedCount · Không phép $unexcusedCount',
-                          ),
-                          children: participants.isEmpty
-                              ? const [
-                                  Padding(
-                                    padding: EdgeInsets.only(bottom: 8),
-                                    child: Text(
-                                      'Chưa có học viên/đồng giáo viên để điểm danh.',
-                                    ),
-                                  ),
-                                ]
-                              : [
-                                  ...participants.map((participant) {
-                                    final status = _attendanceStatusFor(
-                                      classId: cls.classId,
-                                      participantKey: participant.key,
-                                    );
-
-                                    return Container(
-                                      margin: const EdgeInsets.only(bottom: 8),
-                                      padding: const EdgeInsets.all(10),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFFF8FAFF),
-                                        borderRadius: BorderRadius.circular(10),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              Expanded(
-                                                child: Text(
-                                                  participant.name,
-                                                  style: Theme.of(context)
-                                                      .textTheme
-                                                      .bodyMedium
-                                                      ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.w700,
-                                                      ),
-                                                ),
-                                              ),
-                                              if (participant.isCoTeacher)
-                                                _Pill(
-                                                  label: 'Đồng GV',
-                                                  background:
-                                                      const Color(0xFFE3EEFF),
-                                                  foreground:
-                                                      const Color(0xFF1C4ED8),
-                                                  icon: Icons.groups_rounded,
-                                                ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 8),
-                                          Wrap(
-                                            spacing: 8,
-                                            runSpacing: 8,
-                                            children: [
-                                              ..._AttendanceUiStatus.values.map(
-                                                (option) {
-                                                  final isSelected =
-                                                      status == option;
-                                                  return Tooltip(
-                                                    message:
-                                                        _attendanceStatusLabel(
-                                                      option,
-                                                    ),
-                                                    triggerMode:
-                                                        TooltipTriggerMode
-                                                            .longPress,
-                                                    child: ChoiceChip(
-                                                      label: Icon(
-                                                        _attendanceStatusIcon(
-                                                          option,
-                                                        ),
-                                                        size: 18,
-                                                      ),
-                                                      selected: isSelected,
-                                                      selectedColor:
-                                                          _attendanceStatusColor(
-                                                        option,
-                                                      ).withValues(alpha: 0.18),
-                                                      side: BorderSide(
-                                                        color: isSelected
-                                                            ? _attendanceStatusColor(
-                                                                option,
-                                                              )
-                                                            : Colors.blueGrey
-                                                                .shade200,
-                                                      ),
-                                                      onSelected: (selected) {
-                                                        _setAttendanceStatus(
-                                                          classId: cls.classId,
-                                                          participantKey:
-                                                              participant.key,
-                                                          status: selected
-                                                              ? option
-                                                              : null,
-                                                        );
-                                                      },
-                                                    ),
-                                                  );
-                                                },
-                                              ),
-                                            ],
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  }),
-                                  const SizedBox(height: 4),
-                                  SizedBox(
-                                    width: double.infinity,
-                                    child: FilledButton.icon(
-                                      onPressed: participants.isEmpty ||
-                                              isSavingAttendance
-                                          ? null
-                                          : () => _saveAttendanceForClass(
-                                                classId: cls.classId,
-                                                slotId: saveSlotId,
-                                                participants: participants,
-                                              ),
-                                      icon: isSavingAttendance
-                                          ? const SizedBox(
-                                              width: 18,
-                                              height: 18,
-                                              child: CircularProgressIndicator(
-                                                strokeWidth: 2,
-                                              ),
-                                            )
-                                          : const Icon(Icons.save_rounded),
-                                      label: Text(
-                                        isSavingAttendance
-                                            ? 'Dang luu diem danh...'
-                                            : 'Luu ket qua diem danh',
-                                      ),
-                                    ),
-                                  ),
-                                  if (savedAt != null) ...[
-                                    const SizedBox(height: 6),
-                                    Text(
-                                      'Đã lưu lúc ${DateFormat('HH:mm:ss - dd/MM/yyyy').format(savedAt)}'
-                                      '${isDirty ? ' · Có thay đổi chưa lưu' : ''}',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(
-                                            color: isDirty
-                                                ? Colors.orange.shade800
-                                                : Colors.green.shade700,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                    ),
-                                  ],
-                                ],
-                        ),
-                      ),
                     ],
                   ),
                 ),
@@ -2184,6 +2615,44 @@ class _Pill extends StatelessWidget {
   }
 }
 
+class _ClassSectionButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onPressed;
+
+  const _ClassSectionButton({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return FilledButton.icon(
+      onPressed: onPressed,
+      style: FilledButton.styleFrom(
+        elevation: 0,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+        backgroundColor:
+            selected ? const Color(0xFFE3EEFF) : const Color(0xFFF9FBFF),
+        foregroundColor:
+            selected ? const Color(0xFF1C4ED8) : Colors.blueGrey.shade700,
+      ),
+      icon: Icon(icon, size: 16),
+      label: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+}
+
 class _ReminderBadge {
   final String label;
   final Color background;
@@ -2354,6 +2823,40 @@ class _AttendanceParticipant {
     required this.name,
     required this.isCoTeacher,
   });
+}
+
+class _StudentCommentDraft {
+  final String key;
+  final String name;
+  final String? studentId;
+  final String comment;
+
+  const _StudentCommentDraft({
+    required this.key,
+    required this.name,
+    required this.studentId,
+    required this.comment,
+  });
+
+  _StudentCommentDraft copyWith({
+    String? key,
+    String? name,
+    String? studentId,
+    String? comment,
+  }) {
+    return _StudentCommentDraft(
+      key: key ?? this.key,
+      name: name ?? this.name,
+      studentId: studentId ?? this.studentId,
+      comment: comment ?? this.comment,
+    );
+  }
+}
+
+enum _ClassCardSection {
+  details,
+  attendance,
+  note,
 }
 
 enum _AttendanceUiStatus {
