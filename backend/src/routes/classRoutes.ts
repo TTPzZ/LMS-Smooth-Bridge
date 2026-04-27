@@ -851,6 +851,15 @@ function findSingleMatchByKeys<T>(
     };
 }
 
+function getStartOfWeekMs(date: Date): number {
+    const local = new Date(date.getTime());
+    const day = local.getDay();
+    const daysFromMonday = (day + 6) % 7;
+    local.setHours(0, 0, 0, 0);
+    local.setDate(local.getDate() - daysFromMonday);
+    return local.getTime();
+}
+
 function buildPublicCommentContext(
     cls: LmsClassRecord,
     slot: LmsSlotRecord | null | undefined
@@ -1016,20 +1025,14 @@ export function createClassRouter(lmsService: LmsService): Router {
                             normalizeIdentity(slot._id) === normalizeIdentity(nextAttendanceWindow.slotId)
                         )
                         : null;
-                    const nextCommentStartMs = parseDateToMs(nextCommentSlot?.startTime ?? nextCommentSlot?.date);
-                    const previousCommentCandidates = slotsWithStart.filter((item) => {
-                        const isSameAsNext = nextCommentSlot
-                            && normalizeIdentity(item.slot._id) === normalizeIdentity(nextCommentSlot._id);
-                        if (isSameAsNext) {
-                            return false;
-                        }
-                        if (nextCommentStartMs !== null) {
-                            return item.startMs < nextCommentStartMs;
-                        }
-                        return item.startMs <= nowMs;
-                    });
-                    const previousCommentSlot = previousCommentCandidates.length > 0
-                        ? previousCommentCandidates[previousCommentCandidates.length - 1].slot
+                    const currentWeekStartMs = getStartOfWeekMs(now);
+                    const previousWeekStartMs = currentWeekStartMs - (7 * 24 * 60 * 60 * 1000);
+                    const previousWeekSlots = slotsWithStart.filter((item) =>
+                        item.startMs >= previousWeekStartMs
+                        && item.startMs < currentWeekStartMs
+                    );
+                    const previousCommentSlot = previousWeekSlots.length > 0
+                        ? previousWeekSlots[previousWeekSlots.length - 1].slot
                         : null;
                     const nextCommentContext = buildPublicCommentContext(cls, nextCommentSlot);
                     const previousCommentContext = buildPublicCommentContext(cls, previousCommentSlot);

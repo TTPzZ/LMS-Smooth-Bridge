@@ -90,7 +90,10 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<String, bool> _studentCommentLoadingByClassId = {};
   final Map<String, bool> _previousStudentCommentLoadingByClassId = {};
   final Map<String, bool> _studentCommentSavingByClassId = {};
+  final Map<String, bool> _previousStudentCommentSavingByClassId = {};
   final Map<String, String?> _studentCommentSavingDraftKeyByClassId = {};
+  final Map<String, String?> _previousStudentCommentSavingDraftKeyByClassId =
+      {};
   final Map<String, String?> _studentCommentErrorByClassId = {};
   final Map<String, String?> _previousStudentCommentErrorByClassId = {};
   final Set<String> _previousCommentWarningShown = {};
@@ -775,7 +778,7 @@ class _HomeScreenState extends State<HomeScreen> {
         classId: classId,
         slotId: normalizedSlotId,
       );
-      final drafts = comments
+      final allDrafts = comments
           .map(
             (item) => _StudentCommentDraft(
               key: item.key,
@@ -785,14 +788,15 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           )
           .toList();
+      final drafts =
+          allDrafts.where((item) => item.comment.trim().isEmpty).toList();
       setState(() {
         _previousStudentCommentDraftByClassId[classId] = drafts;
         _previousStudentCommentSlotByClassId[classId] = normalizedSlotId;
         _previousStudentCommentErrorByClassId[classId] = null;
       });
 
-      final missingCount =
-          drafts.where((item) => item.comment.trim().isEmpty).length;
+      final missingCount = drafts.length;
       final warningKey = '$classId::$normalizedSlotId';
       if (missingCount > 0 &&
           mounted &&
@@ -801,7 +805,7 @@ class _HomeScreenState extends State<HomeScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Buoi truoc con $missingCount hoc vien chua co nhan xet.',
+              'Tuan truoc con $missingCount hoc vien chua nhan xet.',
             ),
           ),
         );
@@ -836,11 +840,112 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     if (missingNames.length <= 3) {
-      return 'Buoi truoc con ${missingNames.length} hoc vien chua co nhan xet: ${missingNames.join(', ')}.';
+      return 'Tuan truoc con ${missingNames.length} hoc vien chua nhan xet: ${missingNames.join(', ')}.';
     }
 
     final head = missingNames.take(3).join(', ');
-    return 'Buoi truoc con ${missingNames.length} hoc vien chua co nhan xet: $head va ${missingNames.length - 3} hoc vien khac.';
+    return 'Tuan truoc con ${missingNames.length} hoc vien chua nhan xet: $head va ${missingNames.length - 3} hoc vien khac.';
+  }
+
+  void _updatePreviousStudentCommentDraft({
+    required String classId,
+    required String key,
+    required String comment,
+  }) {
+    final drafts = _previousStudentCommentDraftByClassId[classId];
+    if (drafts == null || drafts.isEmpty) {
+      return;
+    }
+
+    final index = drafts.indexWhere((item) => item.key == key);
+    if (index < 0) {
+      return;
+    }
+
+    setState(() {
+      drafts[index] = drafts[index].copyWith(comment: comment);
+      _previousStudentCommentDraftByClassId[classId] =
+          List<_StudentCommentDraft>.from(drafts);
+    });
+  }
+
+  Future<void> _savePreviousWeekStudentCommentForClass({
+    required String classId,
+    required String slotId,
+    required _StudentCommentDraft draft,
+  }) async {
+    final normalizedSlotId = slotId.trim();
+    if (normalizedSlotId.isEmpty) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Chua co slot tuan truoc de luu nhan xet.'),
+        ),
+      );
+      return;
+    }
+
+    if (_previousStudentCommentSavingByClassId[classId] == true) {
+      return;
+    }
+
+    setState(() {
+      _previousStudentCommentSavingByClassId[classId] = true;
+      _previousStudentCommentSavingDraftKeyByClassId[classId] = draft.key;
+      _previousStudentCommentErrorByClassId[classId] = null;
+    });
+
+    try {
+      final result = await _api.saveSlotAttendanceComments(
+        classId: classId,
+        slotId: normalizedSlotId,
+        comments: [
+          AttendanceCommentItem(
+            key: draft.key,
+            name: draft.name,
+            studentId: draft.studentId,
+            comment: draft.comment,
+          ),
+        ],
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      final unresolved = result.unresolvedParticipants.length;
+      final message = unresolved > 0
+          ? 'Luu nhan xet tuan truoc cho ${draft.name} chua thanh cong ($unresolved loi map).'
+          : 'Da luu nhan xet tuan truoc cho ${draft.name}.';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message)),
+      );
+
+      await _loadPreviousStudentCommentsForClass(
+        classId: classId,
+        slotId: normalizedSlotId,
+        force: true,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _previousStudentCommentErrorByClassId[classId] = error.toString();
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Luu nhan xet tuan truoc that bai: $error')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _previousStudentCommentSavingByClassId[classId] = false;
+          _previousStudentCommentSavingDraftKeyByClassId.remove(classId);
+        });
+      }
+    }
   }
 
   void _updateStudentCommentDraft({
@@ -1640,14 +1745,20 @@ class _HomeScreenState extends State<HomeScreen> {
               final previousCommentDrafts =
                   _previousStudentCommentDraftByClassId[cls.classId] ??
                       const <_StudentCommentDraft>[];
+              final previousMissingCount =
+                  cls.previousCommentContext?.missingCommentStudentCount ?? 0;
               final isLoadingComments =
                   _studentCommentLoadingByClassId[cls.classId] == true;
               final isLoadingPreviousComments =
                   _previousStudentCommentLoadingByClassId[cls.classId] == true;
               final isSavingComments =
                   _studentCommentSavingByClassId[cls.classId] == true;
+              final isSavingPreviousComments =
+                  _previousStudentCommentSavingByClassId[cls.classId] == true;
               final savingDraftKey =
                   _studentCommentSavingDraftKeyByClassId[cls.classId];
+              final savingPreviousDraftKey =
+                  _previousStudentCommentSavingDraftKeyByClassId[cls.classId];
               final commentsError = _studentCommentErrorByClassId[cls.classId];
               final previousCommentsError =
                   _previousStudentCommentErrorByClassId[cls.classId];
@@ -1657,8 +1768,8 @@ class _HomeScreenState extends State<HomeScreen> {
               final previousCommentHeader = cls
                           .previousCommentContext?.sessionNumber !=
                       null
-                  ? 'Nhan xet buoi ${cls.previousCommentContext!.sessionNumber}'
-                  : 'Nhan xet buoi truoc';
+                  ? 'Hoc vien chua nhan xet (buoi ${cls.previousCommentContext!.sessionNumber})'
+                  : 'Hoc vien chua nhan xet (tuan truoc)';
               final classStartLabel = _formatDateTime(cls.classStartDate);
               final classEndLabel = _formatDateTime(cls.classEndDate);
               final isAttendanceWindowOpen = nextReminder?.isWindowOpen ??
@@ -1707,6 +1818,12 @@ class _HomeScreenState extends State<HomeScreen> {
                             _MiniStat(
                               icon: Icons.groups_rounded,
                               label: '${cls.coTeachers.length} đồng giáo viên',
+                            ),
+                          if (previousMissingCount > 0)
+                            _MiniStat(
+                              icon: Icons.warning_amber_rounded,
+                              label:
+                                  '$previousMissingCount học viên chưa nhận xét tuần trước',
                             ),
                         ],
                       ),
@@ -2025,117 +2142,6 @@ class _HomeScreenState extends State<HomeScreen> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
-                                previousCommentHeader,
-                                style: Theme.of(context).textTheme.titleSmall,
-                              ),
-                              const SizedBox(height: 8),
-                              if (previousSlotId.isEmpty)
-                                const _EmptyLabel(
-                                  message:
-                                      'Chua co buoi hoc truoc de doi chieu nhan xet.',
-                                )
-                              else if (isLoadingPreviousComments)
-                                const _InlineLoading()
-                              else if (previousCommentsError != null)
-                                _ErrorLabel(message: previousCommentsError)
-                              else if (previousCommentDrafts.isEmpty)
-                                const _EmptyLabel(
-                                  message:
-                                      'Khong co du lieu nhan xet cua buoi hoc truoc.',
-                                )
-                              else ...[
-                                if (previousMissingMessage.isNotEmpty) ...[
-                                  Container(
-                                    width: double.infinity,
-                                    margin: const EdgeInsets.only(bottom: 10),
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFFFF4E5),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                          color: const Color(0xFFF5D0A9)),
-                                    ),
-                                    child: Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        const Padding(
-                                          padding: EdgeInsets.only(top: 1),
-                                          child: Icon(
-                                            Icons.warning_amber_rounded,
-                                            color: Color(0xFFB45309),
-                                            size: 18,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Expanded(
-                                          child: Text(
-                                            previousMissingMessage,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(
-                                                  color:
-                                                      const Color(0xFF92400E),
-                                                  fontWeight: FontWeight.w700,
-                                                ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                ],
-                                ...previousCommentDrafts.map((item) {
-                                  final commentText = item.comment.trim();
-                                  return Container(
-                                    margin: const EdgeInsets.only(bottom: 8),
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFF1F5F9),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          item.name,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodyMedium
-                                              ?.copyWith(
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          commentText.isEmpty
-                                              ? 'Chua co nhan xet'
-                                              : commentText,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
-                                                color: commentText.isEmpty
-                                                    ? Colors.orange.shade800
-                                                    : Colors.blueGrey.shade800,
-                                                fontStyle: commentText.isEmpty
-                                                    ? FontStyle.italic
-                                                    : FontStyle.normal,
-                                                fontWeight: commentText.isEmpty
-                                                    ? FontWeight.w700
-                                                    : FontWeight.w500,
-                                              ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }),
-                              ],
-                              const SizedBox(height: 10),
-                              const Divider(height: 1),
-                              const SizedBox(height: 10),
-                              Text(
                                 'Nhan xet tung hoc vien',
                                 style: Theme.of(context).textTheme.titleSmall,
                               ),
@@ -2227,6 +2233,153 @@ class _HomeScreenState extends State<HomeScreen> {
                                                       savingDraftKey == item.key
                                                   ? 'Dang luu...'
                                                   : 'Luu nhan xet hoc vien nay',
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }),
+                              ],
+                              const SizedBox(height: 10),
+                              const Divider(height: 1),
+                              const SizedBox(height: 10),
+                              Text(
+                                previousCommentHeader,
+                                style: Theme.of(context).textTheme.titleSmall,
+                              ),
+                              const SizedBox(height: 8),
+                              if (previousSlotId.isEmpty)
+                                const _EmptyLabel(
+                                  message:
+                                      'Chua co du lieu tuan truoc de kiem tra nhan xet.',
+                                )
+                              else if (isLoadingPreviousComments)
+                                const _InlineLoading()
+                              else if (previousCommentsError != null)
+                                _ErrorLabel(message: previousCommentsError)
+                              else if (previousCommentDrafts.isEmpty)
+                                const _EmptyLabel(
+                                  message:
+                                      'Tuan truoc tat ca hoc vien da co nhan xet.',
+                                )
+                              else ...[
+                                if (previousMissingMessage.isNotEmpty)
+                                  Container(
+                                    width: double.infinity,
+                                    margin: const EdgeInsets.only(bottom: 10),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFF4E5),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                          color: const Color(0xFFF5D0A9)),
+                                    ),
+                                    child: Row(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        const Padding(
+                                          padding: EdgeInsets.only(top: 1),
+                                          child: Icon(
+                                            Icons.warning_amber_rounded,
+                                            color: Color(0xFFB45309),
+                                            size: 18,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 6),
+                                        Expanded(
+                                          child: Text(
+                                            previousMissingMessage,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .bodySmall
+                                                ?.copyWith(
+                                                  color:
+                                                      const Color(0xFF92400E),
+                                                  fontWeight: FontWeight.w700,
+                                                ),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ...previousCommentDrafts.map((item) {
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 10),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFFBEB),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: const Color(0xFFF3D9AA),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          item.name,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodyMedium
+                                              ?.copyWith(
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        TextFormField(
+                                          key: ValueKey<String>(
+                                            'previous_comment_${cls.classId}_${item.key}_$previousSlotId',
+                                          ),
+                                          initialValue: item.comment,
+                                          minLines: 2,
+                                          maxLines: 4,
+                                          decoration: const InputDecoration(
+                                            hintText:
+                                                'Nhap nhan xet cho hoc vien tuan truoc',
+                                          ),
+                                          onChanged: (value) {
+                                            _updatePreviousStudentCommentDraft(
+                                              classId: cls.classId,
+                                              key: item.key,
+                                              comment: value,
+                                            );
+                                          },
+                                        ),
+                                        const SizedBox(height: 8),
+                                        SizedBox(
+                                          width: double.infinity,
+                                          child: FilledButton.icon(
+                                            onPressed: isSavingPreviousComments
+                                                ? null
+                                                : () =>
+                                                    _savePreviousWeekStudentCommentForClass(
+                                                      classId: cls.classId,
+                                                      slotId: previousSlotId,
+                                                      draft: item,
+                                                    ),
+                                            icon: isSavingPreviousComments &&
+                                                    savingPreviousDraftKey ==
+                                                        item.key
+                                                ? const SizedBox(
+                                                    width: 18,
+                                                    height: 18,
+                                                    child:
+                                                        CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                                  )
+                                                : const Icon(
+                                                    Icons.save_rounded,
+                                                  ),
+                                            label: Text(
+                                              isSavingPreviousComments &&
+                                                      savingPreviousDraftKey ==
+                                                          item.key
+                                                  ? 'Dang luu...'
+                                                  : 'Luu nhan xet tuan truoc',
                                             ),
                                           ),
                                         ),
