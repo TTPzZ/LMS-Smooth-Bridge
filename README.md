@@ -1,123 +1,188 @@
-LMS Smooth Bridge (Proxy & Automation System)
-Overview
-LMS Smooth Bridge is a dedicated backend middleware system designed to optimize, automate, and extend the capabilities of the original LMS for a custom mobile application. Initially conceived to solve performance bottlenecks caused by heavy API payloads, the architecture is designed to scale into a multi-tenant platform supporting up to 30 instructors. It manages session states, filters redundant data, and introduces automation features like payroll tracking and AI-assisted student evaluations.
+<div align="center">
 
-Core Features
-Data Transformation (Payload Optimization): Intercepts massive GraphQL responses (up to 4MB) from the upstream LMS, strips out unnecessary metadata and PII, and delivers highly optimized JSON payloads (under 50KB) to ensure a fluid mobile experience.
+<img width="100%" src="https://capsule-render.vercel.app/api?type=waving&height=220&color=gradient&customColorList=1&text=LMS%20Smooth%20Bridge&fontSize=50&fontAlignY=40&desc=Proxy%20and%20Automation%20Middleware%20System&descAlignY=62" />
 
-Multi-Tenant Session Management: Securely handles authentication for multiple instructors. It stores encrypted refreshTokens in MongoDB and automatically negotiates with Firebase Auth to issue fresh idTokens upon expiration, eliminating the need for manual re-login.
+<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=20&pause=1000&center=true&vCenter=true&width=900&lines=Optimizing+LMS+Payloads+(4MB+%E2%86%92+50KB);Multi-Tenant+Session+and+Auth+Management;Automated+Payroll+%2B+AI-Assisted+Evaluations;Node.js+%2B+MongoDB+%2B+Vercel+%2B+Flutter" />
 
-Automated Payroll & Timesheets: Utilizes background cronjobs to periodically scan and aggregate completed teaching slots from the LMS. Data is cached locally to generate instant payroll reports and timesheets without repeatedly querying the original server.
+<br/>
 
-Smart Evaluation System: Stores pre-defined evaluation templates for specific subjects (e.g., Game Maker, Robot 1, Python). It is structured to integrate AI models that can generate draft comments based on attendance and performance parameters, allowing instructors to review and submit with a single tap.
+<img src="https://img.shields.io/badge/Backend-Node.js%20%7C%20TS-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" />
+<img src="https://img.shields.io/badge/Database-MongoDB_Atlas-47A248?style=for-the-badge&logo=mongodb&logoColor=white" />
+<img src="https://img.shields.io/badge/Hosting-Vercel-black?style=for-the-badge&logo=vercel" />
+<img src="https://img.shields.io/badge/Auth-Firebase-FFCA28?style=for-the-badge&logo=firebase&logoColor=white" />
+<img src="https://img.shields.io/badge/Mobile-Flutter-02569B?style=for-the-badge&logo=flutter&logoColor=white" />
+<img src="https://img.shields.io/badge/API-GraphQL-E10098?style=for-the-badge&logo=graphql&logoColor=white" />
 
-Technology Stack
-Backend Environment: Node.js with TypeScript (Framework: Express or Fastify). TypeScript is strictly used to define interfaces for complex GraphQL responses.
+</div>
 
-Database: MongoDB (MongoDB Atlas). Used for storing the Users collection, encrypted tokens, evaluation templates, and cached timesheet data.
+---
 
-Mobile Client: Flutter (Targeting iOS and Android).
+## About The Project
 
-Authentication: Firebase Authentication (via REST API signInWithPassword flow).
+**LMS Smooth Bridge** is a dedicated backend middleware system designed to optimize, automate, and extend the capabilities of a legacy LMS for a custom mobile application. 
 
-Deployment & Hosting: Vercel (Optimized for serverless Node.js functions).
+Initially conceived to solve severe performance bottlenecks caused by heavy API payloads, this architecture is built to scale into a multi-tenant platform supporting up to 30 instructors. It seamlessly manages session states, drastically filters redundant data, and introduces powerful automation features like background payroll tracking and AI-assisted student evaluations.
 
-System Architecture & Data Flow
-Authentication Flow: The Flutter app sends credentials to the Node.js Backend. The Backend authenticates with Firebase, retrieves the tokens, stores the refreshToken in MongoDB, and returns a session identifier to the app.
+---
 
-Proxy Flow: The mobile app requests data (e.g., class list). The Backend retrieves the active idToken from the database, forwards the request to the LMS GraphQL endpoint, receives the raw data, applies the Data Transformer logic, and returns the sanitized data to the app.
+## System Architecture & Data Flow
 
-Action Flow: When an instructor submits an attendance record, the Backend compiles the required GraphQL mutation and executes it on the upstream LMS on behalf of the user.
+```
+                                  ┌────────────────────┐
+                                  │   Flutter Mobile   │
+                                  │   (iOS & Android)  │
+                                  └─────────┬──────────┘
+                                            │ Optimized JSON Payload (< 50KB)
+                                            ▼
+                                  ┌───────────────────────┐
+                   ┌──────────────┤   LMS Smooth Bridge   ├──────────────┐
+                   │              │  (Node.js + Vercel)   │              │
+                   │              └─────────┬─────────────┘              │
+             Firebase Auth                  │ GraphQL                    │ MongoDB Atlas
+          (Auth & Token Swap)               │ (Heavy Payload: ~4MB)      │ (Sessions & Caching)
+                   ▼                        ▼                            ▼
+           ┌──────────────┐          ┌──────────────┐             ┌──────────────┐
+           │   Firebase   │          │ Upstream LMS │             │   MongoDB    │
+           └──────────────┘          └──────────────┘             └──────────────┘
+```
+### Core Data Flows
+Authentication Flow: Flutter app sends credentials ➔ Backend authenticates via Firebase ➔ Retrieves tokens & stores refreshToken in MongoDB ➔ Returns session ID to app.
 
-Target APIs (Reverse Engineered)
-Authentication: https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword?key=[FIREBASE_API_KEY]
+Proxy Flow: Mobile app requests data ➔ Backend retrieves active idToken ➔ Forwards request to LMS GraphQL ➔ Transforms & strips PII (4MB down to 50KB) ➔ Returns sanitized JSON.
 
-LMS GraphQL Endpoint: https://lms-api.mindx.edu.vn/graphql
+Action Flow: Instructor submits attendance ➔ Backend compiles GraphQL mutation ➔ Executes on Upstream LMS.
 
+### Key Features
+#### Payload Optimization (Data Transformation): 
+Intercepts massive GraphQL responses (up to 4MB), strips unnecessary metadata and PII, and delivers lightweight JSON (< 50KB) for a fluid mobile experience.
+
+#### Multi-Tenant Session Management: 
+Secure auth for multiple instructors. Stores encrypted refreshTokens (MongoDB) and auto-negotiates with Firebase Auth to issue fresh idTokens, eliminating manual re-logins.
+
+#### Automated Payroll & Timesheets: 
+Background cronjobs scan and aggregate completed teaching slots. Data is locally cached for instant payroll/timesheet reporting without hammering the LMS server.
+
+#### Smart Evaluation System: 
+Pre-defined evaluation templates for subjects (Game Maker, Robot 1, Python). Structured for AI integration to generate draft comments based on attendance and performance.
+
+#### Push Notification Engine: 
+FCM-based auto-reminders for upcoming and active attendance windows.
+
+### Tech Stack
+```
+Layer	Technology
+Backend / API	Node.js, TypeScript (Express/Fastify)
+Database	MongoDB Atlas
+Mobile Client	Flutter (iOS & Android)
+Authentication	Firebase Auth (REST signInWithPassword)
+Deployment	Vercel (Serverless Functions)
+Target Endpoints	Firebase API, Upstream LMS GraphQL
+```
+### Code Structure
+```
+lms-smooth-bridge/
+├── src/
+│   ├── index.ts           # Server bootstrap
+│   ├── config/env.ts      # Env parsing and default configurations
+│   ├── db/                # MongoDB connection and schemas/models
+│   ├── services/          # Business logic: LMS Auth, LMS API, Windows, Notifiers
+│   └── routes/            # API endpoints grouped by feature
+├── .env.example           # Environment template
+└── package.json
+```
+### Getting Started
+1. Database Setup (MongoDB Atlas)
+   
+         Sign in to MongoDB Atlas and create a project (LMS-Smooth-Bridge).
+         Create a Free Tier Cluster.
+         In Database Access, create a user (e.g., lms_admin / <strong_password>) with the Atlas admin role.
+         In Network Access, whitelist your IP (use 0.0.0.0/0 temporarily for local dev).
+         Copy the connection string from Connect ➔ Drivers.
+
+2. Backend Authentication Setup (No More F12)
+Clone the repo and navigate to the backend folder:
+```
+npm install
+cp .env.example .env
+```
+Configure ONE of these Auth strategies in .env:
+
+Recommended: 
+```
+FIREBASE_API_KEY + LMS_REFRESH_TOKEN (Server auto-refreshes idToken).
+```   
+Alternative:
+```
+FIREBASE_API_KEY + LMS_EMAIL + LMS_PASSWORD (Server logs in ➔ auto-refreshes).
+```
+Set your MongoDB variables:
+```
+MONGO_URI="your_connection_string_here"
+MONGO_DB_NAME="lms_smooth_bridge"
+```
+3. Running Locally
+```
+npm run dev
+```
+The server will log the active auth mode (refresh-token or email-password) and confirm MongoDB: connected.
+
+### API Ecosystem
+Firebase Auth: 
+```
+https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword?key=[KEY]
+```
+LMS GraphQL: 
+```
+https://lms-api.mindx.edu.vn/graphql
+```
 query GetClasses: Fetches assigned classes and student lists.
+mutation StudentAttendance: Submits attendance and teacher comments.
 
-mutation StudentAttendance: Submits attendance records and teacher comments.
+```
+GET /api/classes
+```
+Extends standard response with: classEndDate, isClassEnded, nextAttendanceWindow (slot details, open/close times, countdown).
 
-Backend Auth Setup (No More F12)
-1. Create `backend/.env` from `backend/.env.example`.
-2. Configure one of these strategies:
-   - Recommended: `FIREBASE_API_KEY` + `LMS_REFRESH_TOKEN` (server will auto refresh idToken).
-   - Alternative: `FIREBASE_API_KEY` + `LMS_EMAIL` + `LMS_PASSWORD` (server logs in, then auto refreshes).
-3. Start backend with `npm run dev` inside `backend`.
-4. Server logs current auth mode at startup (`refresh-token`, `email-password`, or fallback mode).
+```
+GET /api/attendance-reminders
+```
+Returns upcoming attendance windows.
 
-Database Setup (MongoDB Atlas - Step by Step)
-1. Sign in to MongoDB Atlas: https://www.mongodb.com/atlas/database
-2. Create a new Project (e.g., `LMS-Smooth-Bridge`).
-3. Create a Cluster (shared free tier is enough for MVP).
-4. Open `Database Access` and create a database user:
-   - Username: your choice (e.g., `lms_admin`)
-   - Password: generate a strong password and store securely
-   - Role: `Atlas admin` for quick setup (tighten later if needed)
-5. Open `Network Access` and allow your backend IP:
-   - For local test: add `0.0.0.0/0` temporarily
-   - For production: whitelist only server IPs
-6. In Cluster view, click `Connect` -> `Drivers` -> copy the connection string.
-7. In `backend/.env`, set:
-   - `MONGO_URI=<your connection string>`
-   - `MONGO_DB_NAME=lms_smooth_bridge`
-8. Start backend with `npm run dev` and verify log `MongoDB: connected`.
-9. Check collections are auto-created after API calls:
-   - `devices`
-   - `notificationevents`
+Params: lookAheadMinutes (def: 1440), maxSlots (def: 20), activeOnly (def: true).
 
-Attendance Reminder APIs
-1. `GET /api/classes`: now also returns:
-   - `classEndDate` and `isClassEnded`
-   - `nextAttendanceWindow` (slotId, slot start/end, attendance open/close window, countdown minutes)
-2. `GET /api/attendance-reminders`: returns upcoming attendance windows across classes.
-   - Useful query params: `lookAheadMinutes` (default 1440), `maxSlots` (default 20), `activeOnly` (default true)
-   - Attendance window rule follows LMS: open 5 minutes before slot start, close 30 minutes after slot end.
+Rule: Opens 5 mins before slot start, closes 30 mins after slot end.
 
-Payroll API (Monthly Teaching Summary)
-1. `GET /api/payroll/monthly`
-2. Query params:
-   - `month` (1-12), `year` (YYYY), `timezone` (default `Asia/Ho_Chi_Minh`)
-   - Optional teacher selector: `teacherId` or `username`
-   - Optional status counted as taught: `countedStatuses` (comma separated, default `ATTENDED,LATE_ARRIVED`)
-3. Response includes:
-   - Total taught slots in month
-   - Classes taught
-   - Role breakdown (`LEC`, `TA`, `Judge`, ...)
-   - Slot-level details for manual salary calculation
+```
+GET /api/payroll/monthly
+```
+Query Params: month (1-12), year (YYYY), timezone, teacherId / username, countedStatuses (def: ATTENDED,LATE_ARRIVED).
 
-Backend Push Notifier (FCM)
-1. Enable in `backend/.env`:
-   - `ENABLE_PUSH_NOTIFIER=true`
-   - Configure FCM credentials using either:
-     - `FCM_PROJECT_ID` + `FCM_CLIENT_EMAIL` + `FCM_PRIVATE_KEY`
-     - or `GOOGLE_APPLICATION_CREDENTIALS`
-2. Device registration endpoints:
-   - `POST /api/devices/register` with body `{ token, platform, userId?, timezone?, appVersion? }`
-   - `POST /api/devices/unregister` with body `{ token }`
-   - `GET /api/devices` to inspect registered devices (masked token preview)
-3. Notifier operations:
-   - `GET /api/notifier/status` to check runtime status
-   - `POST /api/notifications/test` to send test push to one token or all registered tokens
-4. Auto-reminder behavior:
-   - Sends `UPCOMING` reminder before attendance window opens (default look-ahead: 15 minutes)
-   - Sends `OPEN` reminder when attendance window is open
-   - Dedupe is enabled to prevent repeated spam for the same slot stage
+Returns: Total taught slots, roles (LEC, TA, Judge), and slot-level details for manual verification.
 
-Code Structure (Refactored)
-- `src/index.ts`: server bootstrap only
-- `src/config/env.ts`: env parsing and defaults
-- `src/db/`: MongoDB connection and models
-- `src/services/`: LMS auth, LMS API, attendance window logic, notifier logic
-- `src/routes/`: API endpoints grouped by feature
+#### Requires .env config: ENABLE_PUSH_NOTIFIER=true + FCM Credentials.
+
+Registration: - POST /api/devices/register - { token, platform, userId?, timezone?, appVersion? }
+
+```
+POST /api/devices/unregister - { token }
+```
+#### Operations:
+```
+GET /api/notifier/status - Runtime health check.
+
+POST /api/notifications/test - Trigger test push.
+```
+Automation: Sends UPCOMING (15 mins prior) and OPEN reminders. Deduplication active to prevent spam.
 
 Development Roadmap
-Phase 1: Prototype (MVP) - The Data Filter: Set up the Node.js backend. Hardcode a single active token to establish the connection. Build the core parser to transform the 4MB LMS payload into a lightweight structure.
+```
+[x] Phase 1: Prototype (MVP) - The Data Filter: Node.js backend setup, hardcoded token connection, core parser built to crush 4MB payloads to 50KB.
 
-Phase 2: Multi-Tenant Auth: Integrate MongoDB. Create the Users schema. Implement the automated login and token refresh logic for multiple accounts.
+[x] Phase 2: Multi-Tenant Auth: MongoDB integration, Users schema, automated login, and token refresh logic.
 
-Phase 3: Flutter Mobile App: Develop the UI components (Dashboard, Class List, Attendance Form) and connect them to the optimized Node.js endpoints.
+[x] Phase 3: Flutter Mobile App: Dashboard, Class List, and Attendance Form UI connected to optimized endpoints.
 
-Phase 4: Payroll Automation: Implement cronjobs to fetch completed slots, aggregate working hours, and calculate payroll based on hourly rates.
+[x] Phase 4: Payroll Automation: Cronjobs for slot aggregation, working hour compilation, and automated salary calculation.
 
-Phase 5: Evaluation Engine: Integrate subject-specific comment templates and AI generation endpoints for quick grading.
+[ ] Phase 5: Evaluation Engine: AI-generated grading drafts and subject-specific comment templates.
+```
