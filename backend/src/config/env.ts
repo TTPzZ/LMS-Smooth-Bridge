@@ -55,7 +55,7 @@ export const env = {
     MAX_REMINDER_SLOTS: parseIntegerEnv(process.env.MAX_REMINDER_SLOTS, 200),
     RATE_LIMIT_WINDOW_SECONDS: parseIntegerEnv(process.env.RATE_LIMIT_WINDOW_SECONDS, 60),
     RATE_LIMIT_MAX_REQUESTS: parseIntegerEnv(process.env.RATE_LIMIT_MAX_REQUESTS, 120),
-    TRUST_PROXY: parseBooleanEnv(process.env.TRUST_PROXY, true),
+    TRUST_PROXY: parseBooleanEnv(process.env.TRUST_PROXY, false),
     CORS_ORIGINS: parseStringListEnv(process.env.CORS_ORIGINS),
 
     FIREBASE_API_KEY: process.env.FIREBASE_API_KEY?.trim() ?? '',

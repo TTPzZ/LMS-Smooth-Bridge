@@ -921,6 +921,30 @@ export class LmsService {
         };
     }
 
+    async validateClientToken(idTokenOverride: string): Promise<void> {
+        const normalizedOverrideToken = String(idTokenOverride ?? '').trim();
+        if (!normalizedOverrideToken) {
+            throw new LmsClientAuthError('Missing Bearer token');
+        }
+
+        const graphqlQuery = {
+            operationName: 'AuthProbeClasses',
+            query: `query AuthProbeClasses($pageIndex: Int!, $itemsPerPage: Int!) {
+              classes(payload: {pageIndex: $pageIndex, itemsPerPage: $itemsPerPage}) {
+                data {
+                  id
+                }
+              }
+            }`,
+            variables: {
+                pageIndex: 0,
+                itemsPerPage: 1
+            }
+        };
+
+        await this.callLmsGraphqlWithAutoRefresh(graphqlQuery, normalizedOverrideToken);
+    }
+
     async getCurrentAuthToken(idTokenOverride?: string): Promise<string> {
         const normalizedOverrideToken = String(idTokenOverride ?? '').trim();
         if (normalizedOverrideToken) {

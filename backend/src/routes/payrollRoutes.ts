@@ -39,10 +39,18 @@ export function createPayrollRouter(payrollService: PayrollService): Router {
                 : typeof error?.response?.status === 'number'
                     ? error.response.status
                     : 400;
+            if (statusCode === 401) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    detail: 'Invalid or expired Bearer token'
+                });
+                return;
+            }
             res.status(statusCode).json({
                 success: false,
                 error: 'Khong lay duoc du lieu payroll',
-                detail
+                detail: statusCode >= 500 ? 'Internal server error' : 'Request failed'
             });
         }
     });

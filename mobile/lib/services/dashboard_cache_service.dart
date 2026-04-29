@@ -5,7 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/api_models.dart';
 
 class DashboardCacheService {
-  static const String _prefix = 'dashboard_cache_v2';
+  static const String _prefix = 'dashboard_cache_v3';
 
   Future<List<ClassSummary>?> loadClasses({
     required String username,

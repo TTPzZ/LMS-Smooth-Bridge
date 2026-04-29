@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { createHash } from 'crypto';
 import { env } from '../config/env';
 import { LmsService } from '../services/lmsService';
 import {
@@ -257,8 +258,7 @@ function readPrincipal(idTokenFromHeader: string | null | undefined): ReminderPr
 }
 
 function buildDashboardOverviewCacheKey(params: {
-    teacherId: string;
-    username: string;
+    tokenHash: string;
     activeOnly: boolean;
     itemsPerPage: number;
     maxPages: number;
@@ -266,14 +266,35 @@ function buildDashboardOverviewCacheKey(params: {
     maxSlots: number;
 }): string {
     return [
-        params.teacherId,
-        params.username,
+        params.tokenHash,
         params.activeOnly ? '1' : '0',
         String(params.itemsPerPage),
         String(params.maxPages),
         String(params.lookAheadMinutes),
         String(params.maxSlots)
     ].join('|');
+}
+
+function hashTokenForCache(token: string): string {
+    return createHash('sha256').update(token).digest('hex').slice(0, 24);
+}
+
+function mapPublicErrorDetail(statusCode: number): string {
+    if (statusCode === 401) {
+        return 'Invalid or expired Bearer token';
+    }
+    if (statusCode >= 500) {
+        return 'Internal server error';
+    }
+    return 'Request failed';
+}
+
+function mapParticipantFailureDetail(error: any): string {
+    const statusCode = error?.statusCode || error?.response?.status;
+    if (statusCode === 401 || statusCode === 403) {
+        return 'Unauthorized';
+    }
+    return 'LMS update failed';
 }
 
 function pruneDashboardOverviewCache(nowMs: number): void {
@@ -1315,10 +1336,18 @@ export function createClassRouter(lmsService: LmsService): Router {
             const statusCode = error?.statusCode || error?.response?.status || 500;
             const detail = error?.response?.data || error?.message;
             console.error('Loi:', detail);
+            if (statusCode === 401) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    detail: mapPublicErrorDetail(statusCode)
+                });
+                return;
+            }
             res.status(statusCode).json({
                 success: false,
                 error: 'Loi ket noi API',
-                detail
+                detail: mapPublicErrorDetail(statusCode)
             });
         }
     });
@@ -1408,10 +1437,18 @@ export function createClassRouter(lmsService: LmsService): Router {
             const statusCode = error?.statusCode || error?.response?.status || 500;
             const detail = error?.response?.data || error?.message;
             console.error('Loi:', detail);
+            if (statusCode === 401) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    detail: mapPublicErrorDetail(statusCode)
+                });
+                return;
+            }
             res.status(statusCode).json({
                 success: false,
                 error: 'Loi ket noi API',
-                detail
+                detail: mapPublicErrorDetail(statusCode)
             });
         }
     });
@@ -1453,11 +1490,10 @@ export function createClassRouter(lmsService: LmsService): Router {
                 1,
                 env.MAX_REMINDER_SLOTS
             );
-            const principal = readPrincipal(idTokenFromHeader);
             const forceRefresh = parseBooleanQuery(req.query.forceRefresh, false);
+            const tokenHash = hashTokenForCache(idTokenFromHeader);
             const cacheKey = buildDashboardOverviewCacheKey({
-                teacherId: normalizeIdentity(principal.teacherId),
-                username: normalizeIdentity(principal.username),
+                tokenHash,
                 activeOnly,
                 itemsPerPage,
                 maxPages,
@@ -1489,6 +1525,7 @@ export function createClassRouter(lmsService: LmsService): Router {
 
                 if (cached && cached.staleUntilMs > nowMs) {
                     if (!dashboardOverviewCacheInFlight.has(cacheKey)) {
+                        const principal = readPrincipal(idTokenFromHeader);
                         void loadAndCacheDashboardOverview({
                             cacheKey,
                             idTokenFromHeader,
@@ -1522,6 +1559,7 @@ export function createClassRouter(lmsService: LmsService): Router {
                 }
             }
 
+            const principal = readPrincipal(idTokenFromHeader);
             const refreshed = await loadAndCacheDashboardOverview({
                 cacheKey,
                 idTokenFromHeader,
@@ -1552,10 +1590,18 @@ export function createClassRouter(lmsService: LmsService): Router {
             const statusCode = error?.statusCode || error?.response?.status || 500;
             const detail = error?.response?.data || error?.message;
             console.error('Loi:', detail);
+            if (statusCode === 401) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    detail: mapPublicErrorDetail(statusCode)
+                });
+                return;
+            }
             res.status(statusCode).json({
                 success: false,
                 error: 'Loi ket noi API',
-                detail
+                detail: mapPublicErrorDetail(statusCode)
             });
         }
     });
@@ -1759,10 +1805,18 @@ export function createClassRouter(lmsService: LmsService): Router {
             const statusCode = error?.statusCode || error?.response?.status || 500;
             const detail = error?.response?.data || error?.message;
             console.error('Loi:', detail);
+            if (statusCode === 401) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    detail: mapPublicErrorDetail(statusCode)
+                });
+                return;
+            }
             res.status(statusCode).json({
                 success: false,
                 error: 'Loi lay nhan xet',
-                detail
+                detail: mapPublicErrorDetail(statusCode)
             });
         }
     });
@@ -2010,14 +2064,10 @@ export function createClassRouter(lmsService: LmsService): Router {
                     await lmsService.updateSlotComment(item.command, idTokenFromHeader);
                     appliedParticipantKeys.add(item.key);
                 } catch (error: any) {
-                    const rawDetail = error?.response?.data || error?.message || error;
-                    const detail = typeof rawDetail === 'string'
-                        ? rawDetail
-                        : JSON.stringify(rawDetail);
                     failedParticipants.push({
                         key: item.key,
                         name: item.name,
-                        detail
+                        detail: mapParticipantFailureDetail(error)
                     });
                 }
             }
@@ -2053,10 +2103,18 @@ export function createClassRouter(lmsService: LmsService): Router {
             const statusCode = error?.statusCode || error?.response?.status || 500;
             const detail = error?.response?.data || error?.message;
             console.error('Loi:', detail);
+            if (statusCode === 401) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    detail: mapPublicErrorDetail(statusCode)
+                });
+                return;
+            }
             res.status(statusCode).json({
                 success: false,
                 error: 'Loi luu nhan xet',
-                detail
+                detail: mapPublicErrorDetail(statusCode)
             });
         }
     });
@@ -2329,10 +2387,18 @@ export function createClassRouter(lmsService: LmsService): Router {
             const statusCode = error?.statusCode || error?.response?.status || 500;
             const detail = error?.response?.data || error?.message;
             console.error('Loi:', detail);
+            if (statusCode === 401) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    detail: mapPublicErrorDetail(statusCode)
+                });
+                return;
+            }
             res.status(statusCode).json({
                 success: false,
                 error: 'Loi luu diem danh',
-                detail
+                detail: mapPublicErrorDetail(statusCode)
             });
         }
     });

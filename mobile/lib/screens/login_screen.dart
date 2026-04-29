@@ -1,5 +1,5 @@
 import 'dart:async';
-
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -9,6 +9,7 @@ import '../services/auth_session_manager.dart';
 import '../services/public_app_config_service.dart';
 import '../services/secure_store_service.dart';
 import '../theme/app_theme.dart';
+import '../theme/responsive.dart';
 
 class LoginScreen extends StatefulWidget {
   final AuthSessionManager sessionManager;
@@ -24,8 +25,11 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
+class _LoginScreenState extends State<LoginScreen>
+    with TickerProviderStateMixin {
   static const String _requiredDomain = 'mindx.net.vn';
+  static const Duration _shimmerDuration = Duration(milliseconds: 6500);
+  static const Duration _shimmerPauseDuration = Duration(seconds: 2);
   static const String _rememberPasswordKey = 'auth.remember_password_v1';
   static const String _legacyRememberedEmailKey = 'auth.remembered_email_v1';
   static const String _legacyRememberedPasswordKey =
@@ -38,81 +42,105 @@ class _LoginScreenState extends State<LoginScreen> {
   final SecureStoreService _secureStore = const SecureStoreService();
   final PublicAppConfigService _publicAppConfigService =
       PublicAppConfigService();
+
   late final TextEditingController _emailController;
   late final TextEditingController _passwordController;
-  late final FocusNode _emailFocusNode;
+
+  final FocusNode _emailFocusNode = FocusNode();
+  final FocusNode _passwordFocusNode = FocusNode();
 
   bool _isSubmitting = false;
   bool _obscurePassword = true;
   bool _rememberPassword = false;
   String? _errorText;
 
+  late AnimationController _entranceController;
+  late AnimationController _shimmerController;
+  late AnimationController _bgController;
+
   @override
   void initState() {
     super.initState();
     _emailController = TextEditingController();
     _passwordController = TextEditingController();
-    _emailFocusNode = FocusNode();
-    _emailFocusNode.addListener(_onEmailFocusChanged);
+
+    _emailFocusNode.addListener(() => setState(() {}));
+    _passwordFocusNode.addListener(() => setState(() {}));
+
     unawaited(_loadRememberedCredentials());
+
+    _entranceController = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 1500));
+
+    // Tốc độ lướt chéo của ánh sáng (3.5 giây là mức đằm, mượt)
+    _shimmerController =
+        AnimationController(vsync: this, duration: _shimmerDuration);
+    unawaited(_runShimmerLoop());
+
+    // Nền chuyển động thở chậm 30 giây
+    _bgController =
+        AnimationController(vsync: this, duration: const Duration(seconds: 30))
+          ..repeat(reverse: true);
+
+    Timer(const Duration(milliseconds: 100), () {
+      if (mounted) _entranceController.forward();
+    });
   }
 
   @override
   void dispose() {
-    _emailFocusNode.removeListener(_onEmailFocusChanged);
     _emailFocusNode.dispose();
+    _passwordFocusNode.dispose();
     _emailController.dispose();
     _passwordController.dispose();
+    _entranceController.dispose();
+    _shimmerController.dispose();
+    _bgController.dispose();
     super.dispose();
   }
 
-  void _onEmailFocusChanged() {
-    if (!mounted) {
-      return;
+  Future<void> _runShimmerLoop() async {
+    while (mounted) {
+      try {
+        await _shimmerController.forward(from: 0);
+      } on TickerCanceled {
+        return;
+      }
+      if (!mounted) return;
+      await Future<void>.delayed(_shimmerPauseDuration);
     }
-    setState(() {});
   }
+
+  // =========================================================================
+  // LOGIC
+  // =========================================================================
 
   bool get _showMindxSuggestion {
     final raw = _emailController.text.trim();
     return _emailFocusNode.hasFocus && raw.isNotEmpty && !raw.contains('@');
   }
 
-  String _normalizeEmailInput(
-    String raw, {
-    bool appendDefaultDomain = true,
-  }) {
+  String _normalizeEmailInput(String raw, {bool appendDefaultDomain = true}) {
     final normalized = raw.trim().toLowerCase();
-    if (normalized.isEmpty) {
-      return '';
-    }
-
+    if (normalized.isEmpty) return '';
     final atIndex = normalized.indexOf('@');
     if (atIndex < 0) {
       return appendDefaultDomain ? '$normalized@$_requiredDomain' : normalized;
     }
-
     final localPart = normalized.substring(0, atIndex).trim();
     final domain = normalized.substring(atIndex + 1).trim();
-    if (localPart.isEmpty || domain.isEmpty) {
-      return '';
-    }
+    if (localPart.isEmpty || domain.isEmpty) return '';
     return '$localPart@$domain';
   }
 
   String _usernameFromEmail(String email) {
     final atIndex = email.indexOf('@');
-    if (atIndex <= 0) {
-      return '';
-    }
+    if (atIndex <= 0) return '';
     return email.substring(0, atIndex);
   }
 
   Future<String> _resolveFirebaseApiKey(String backendBaseUrl) async {
-    if (AppConfig.hasFirebaseApiKey) {
-      return AppConfig.firebaseApiKey.trim();
-    }
-
+    if (AppConfig.hasFirebaseApiKey) return AppConfig.firebaseApiKey.trim();
     try {
       return await _publicAppConfigService.fetchFirebaseApiKey(backendBaseUrl);
     } catch (_) {
@@ -126,11 +154,10 @@ class _LoginScreenState extends State<LoginScreen> {
     var savedEmail = '';
     var savedPassword = '';
     if (remember) {
-      savedEmail = (await _secureStore.read(key: _rememberedEmailSecureKey)) ?? '';
+      savedEmail =
+          (await _secureStore.read(key: _rememberedEmailSecureKey)) ?? '';
       savedPassword =
           (await _secureStore.read(key: _rememberedPasswordSecureKey)) ?? '';
-
-      // Legacy migration from plain SharedPreferences to secure storage.
       if (savedEmail.isEmpty && savedPassword.isEmpty) {
         final legacyEmail = prefs.getString(_legacyRememberedEmailKey) ?? '';
         final legacyPassword =
@@ -139,27 +166,17 @@ class _LoginScreenState extends State<LoginScreen> {
           savedEmail = legacyEmail;
           savedPassword = legacyPassword;
           await _secureStore.write(
-            key: _rememberedEmailSecureKey,
-            value: savedEmail,
-          );
+              key: _rememberedEmailSecureKey, value: savedEmail);
           await _secureStore.write(
-            key: _rememberedPasswordSecureKey,
-            value: savedPassword,
-          );
+              key: _rememberedPasswordSecureKey, value: savedPassword);
           await prefs.remove(_legacyRememberedEmailKey);
           await prefs.remove(_legacyRememberedPasswordKey);
         }
       }
     }
-
-    if (!mounted) {
-      return;
-    }
-
-    final normalizedEmail = _normalizeEmailInput(
-      savedEmail,
-      appendDefaultDomain: true,
-    );
+    if (!mounted) return;
+    final normalizedEmail =
+        _normalizeEmailInput(savedEmail, appendDefaultDomain: true);
     setState(() {
       _rememberPassword = remember;
       if (remember) {
@@ -169,10 +186,8 @@ class _LoginScreenState extends State<LoginScreen> {
     });
   }
 
-  Future<void> _saveRememberedCredentials({
-    required String email,
-    required String password,
-  }) async {
+  Future<void> _saveRememberedCredentials(
+      {required String email, required String password}) async {
     final prefs = await SharedPreferences.getInstance();
     if (!_rememberPassword) {
       await prefs.setBool(_rememberPasswordKey, false);
@@ -182,485 +197,657 @@ class _LoginScreenState extends State<LoginScreen> {
       await prefs.remove(_legacyRememberedPasswordKey);
       return;
     }
-
     await prefs.setBool(_rememberPasswordKey, true);
     await _secureStore.write(key: _rememberedEmailSecureKey, value: email);
     await _secureStore.write(
-      key: _rememberedPasswordSecureKey,
-      value: password,
-    );
+        key: _rememberedPasswordSecureKey, value: password);
     await prefs.remove(_legacyRememberedEmailKey);
     await prefs.remove(_legacyRememberedPasswordKey);
   }
 
   Future<void> _onRememberPasswordChanged(bool? value) async {
     final next = value ?? false;
-    if (next == _rememberPassword) {
-      return;
-    }
-
-    setState(() {
-      _rememberPassword = next;
-    });
-
-    final normalizedEmail = _normalizeEmailInput(
-      _emailController.text,
-      appendDefaultDomain: true,
-    );
+    if (next == _rememberPassword) return;
+    setState(() => _rememberPassword = next);
+    final normalizedEmail =
+        _normalizeEmailInput(_emailController.text, appendDefaultDomain: true);
     await _saveRememberedCredentials(
-      email: normalizedEmail,
-      password: _passwordController.text,
-    );
+        email: normalizedEmail, password: _passwordController.text);
   }
 
   void _applyDefaultDomainToEmailField() {
     final current = _emailController.text;
-    final normalized = _normalizeEmailInput(
-      current,
-      appendDefaultDomain: true,
-    );
-    if (normalized.isEmpty) {
-      return;
-    }
-    if (current.trim().toLowerCase() == normalized) {
+    final normalized = _normalizeEmailInput(current, appendDefaultDomain: true);
+    if (normalized.isEmpty || current.trim().toLowerCase() == normalized) {
       return;
     }
     _emailController.value = TextEditingValue(
-      text: normalized,
-      selection: TextSelection.collapsed(offset: normalized.length),
-    );
+        text: normalized,
+        selection: TextSelection.collapsed(offset: normalized.length));
   }
 
   String? _validateEmail(String? value) {
-    final normalized = _normalizeEmailInput(
-      value ?? '',
-      appendDefaultDomain: true,
-    );
-    if (normalized.isEmpty) {
-      return 'Vui lòng nhập email.';
-    }
-
+    final normalized =
+        _normalizeEmailInput(value ?? '', appendDefaultDomain: true);
+    if (normalized.isEmpty) return 'Vui lòng nhập email.';
     final atIndex = normalized.indexOf('@');
     if (atIndex <= 0 || atIndex == normalized.length - 1) {
       return 'Email chưa đúng định dạng.';
     }
-
-    final domain = normalized.substring(atIndex + 1);
-    if (domain != _requiredDomain) {
+    if (normalized.substring(atIndex + 1) != _requiredDomain) {
       return 'Chỉ hỗ trợ email @$_requiredDomain.';
     }
     return null;
   }
 
   Future<void> _submit() async {
-    if (_isSubmitting) {
-      return;
-    }
-
+    if (_isSubmitting) return;
     final form = _formKey.currentState;
-    if (form == null || !form.validate()) {
-      return;
-    }
-
+    if (form == null || !form.validate()) return;
     _applyDefaultDomainToEmailField();
-    final email = _normalizeEmailInput(
-      _emailController.text,
-      appendDefaultDomain: true,
-    );
+    final email =
+        _normalizeEmailInput(_emailController.text, appendDefaultDomain: true);
     final username = _usernameFromEmail(email);
     if (username.isEmpty) {
-      setState(() {
-        _errorText = 'Email chưa đúng định dạng.';
-      });
+      setState(() => _errorText = 'Email chưa đúng định dạng.');
       return;
     }
-
     setState(() {
       _isSubmitting = true;
       _errorText = null;
     });
-
     final backendBaseUrl = AppConfig.apiBaseUrl.trim();
     final firebaseApiKey = await _resolveFirebaseApiKey(backendBaseUrl);
     if (firebaseApiKey.isEmpty) {
       setState(() {
         _isSubmitting = false;
-        _errorText =
-            'Thieu Firebase API key. Hay set FIREBASE_API_KEY o backend/.env hoac --dart-define khi build app.';
+        _errorText = 'Thiếu Firebase API key.';
       });
       return;
     }
-
     try {
       final session = await widget.sessionManager.signIn(
-        apiKey: firebaseApiKey,
-        email: email,
-        username: username,
-        password: _passwordController.text,
-        backendBaseUrl: backendBaseUrl,
-      );
-
+          apiKey: firebaseApiKey,
+          email: email,
+          username: username,
+          password: _passwordController.text,
+          backendBaseUrl: backendBaseUrl);
       await _saveRememberedCredentials(
-        email: email,
-        password: _passwordController.text,
-      );
-
-      if (!mounted) {
-        return;
-      }
+          email: email, password: _passwordController.text);
+      if (!mounted) return;
       widget.onLoginSuccess(session);
     } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _errorText =
-            'Đăng nhập thất bại. Kiểm tra email @$_requiredDomain và mật khẩu.';
-      });
+      if (!mounted) return;
+      setState(
+          () => _errorText = 'Đăng nhập thất bại. Kiểm tra lại thông tin.');
     } finally {
-      if (mounted) {
-        setState(() {
-          _isSubmitting = false;
-        });
-      }
+      if (mounted) setState(() => _isSubmitting = false);
     }
   }
+
+  // =========================================================================
+  // UI - XÓA KÍNH MỜ, ĐỔI SANG THIẾT KẾ PHẲNG & ÁNH SÁNG LƯỚT CHÉO
+  // =========================================================================
 
   @override
   Widget build(BuildContext context) {
     final accents = Theme.of(context).extension<AppAccentColors>()!;
-    final topPadding = MediaQuery.of(context).padding.top;
-    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    final responsive = AppResponsive.of(context);
+    final theme = Theme.of(context);
 
-    return Scaffold(
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    const Color(0xFF06224A),
-                    const Color(0xFF114FA3),
-                    const Color(0xFF0E8B93),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          Positioned(
-            left: -120,
-            top: 50,
-            child: _SoftOrb(
-              size: 240,
-              color: Colors.white.withValues(alpha: 0.1),
-            ),
-          ),
-          Positioned(
-            right: -100,
-            bottom: 40,
-            child: _SoftOrb(
-              size: 280,
-              color: Colors.white.withValues(alpha: 0.11),
-            ),
-          ),
-          SafeArea(
-            child: Center(
-              child: SingleChildScrollView(
-                padding: EdgeInsets.fromLTRB(
-                  18,
-                  topPadding + 6,
-                  18,
-                  bottomPadding + 12,
-                ),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 500),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.95),
-                      borderRadius: BorderRadius.circular(24),
-                      border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.45),
-                        width: 1.2,
-                      ),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x40081C3B),
-                          blurRadius: 28,
-                          offset: Offset(0, 14),
-                        ),
-                      ],
-                    ),
-                    child: Padding(
-                      padding: EdgeInsets.fromLTRB(
-                        MediaQuery.sizeOf(context).width < 380 ? 16 : 22,
-                        MediaQuery.sizeOf(context).width < 380 ? 18 : 22,
-                        MediaQuery.sizeOf(context).width < 380 ? 16 : 22,
-                        MediaQuery.sizeOf(context).width < 380 ? 20 : 24,
-                      ),
-                      child: Form(
-                        key: _formKey,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            LayoutBuilder(
-                              builder: (context, headerConstraints) {
-                                final logo = Container(
-                                  width: 42,
-                                  height: 42,
-                                  decoration: BoxDecoration(
-                                    gradient: const LinearGradient(
-                                      begin: Alignment.topLeft,
-                                      end: Alignment.bottomRight,
-                                      colors: [
-                                        Color(0xFF175EC3),
-                                        Color(0xFF0E8B93),
-                                      ],
-                                    ),
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: const Icon(
-                                    Icons.school_rounded,
-                                    color: Colors.white,
-                                    size: 24,
-                                  ),
-                                );
-                                final title = Text(
-                                  'LMS Smooth Bridge',
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .headlineSmall
-                                      ?.copyWith(
-                                        color: accents.ink,
-                                        fontWeight: FontWeight.w800,
-                                      ),
-                                );
+    final cardMaxWidth = responsive.clampWidth(
+        320, responsive.width * (responsive.isExpanded ? 0.45 : 0.88), 460);
+    final innerPadding = responsive.isCompact ? 24.0 : 36.0;
 
-                                if (headerConstraints.maxWidth < 340) {
-                                  return Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      logo,
-                                      const SizedBox(height: 10),
-                                      title,
-                                    ],
-                                  );
-                                }
+    const accentRed = Color(0xFFD32F2F);
 
-                                return Row(
-                                  children: [
-                                    logo,
-                                    const SizedBox(width: 12),
-                                    Expanded(child: title),
-                                  ],
-                                );
-                              },
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              'Đăng nhập để quản lý lớp học và theo dõi thu nhập nhanh gọn.',
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodyMedium
-                                  ?.copyWith(
-                                    color: accents.mutedInk,
-                                  ),
-                            ),
-                            const SizedBox(height: 18),
-                            TextFormField(
-                              focusNode: _emailFocusNode,
-                              controller: _emailController,
-                              keyboardType: TextInputType.emailAddress,
-                              textInputAction: TextInputAction.next,
-                              autofillHints: const [AutofillHints.email],
-                              decoration: InputDecoration(
-                                labelText: 'Email',
-                                hintText: 'Nhập mã giáo viên của bạn',
-                                prefixIcon:
-                                    const Icon(Icons.alternate_email_rounded),
-                                suffixText: _showMindxSuggestion
-                                    ? '@$_requiredDomain'
-                                    : null,
-                                helperText: _showMindxSuggestion
-                                    ? 'Sẽ tự thêm @$_requiredDomain khi đăng nhập.'
-                                    : 'Chỉ hỗ trợ email @$_requiredDomain',
-                                helperMaxLines: 2,
-                              ),
-                              validator: _validateEmail,
-                              onChanged: (_) {
-                                if (_errorText != null) {
-                                  setState(() {
-                                    _errorText = null;
-                                  });
-                                  return;
-                                }
-                                if (_emailFocusNode.hasFocus &&
-                                    _rememberPassword &&
-                                    _passwordController.text.isNotEmpty) {
-                                  setState(() {});
-                                  return;
-                                }
-                                if (_emailFocusNode.hasFocus) {
-                                  setState(() {});
-                                }
-                              },
-                              onFieldSubmitted: (_) {
-                                _applyDefaultDomainToEmailField();
-                                FocusScope.of(context).nextFocus();
-                              },
-                            ),
-                            const SizedBox(height: 12),
-                            TextFormField(
-                              controller: _passwordController,
-                              obscureText: _obscurePassword,
-                              textInputAction: TextInputAction.done,
-                              autofillHints: const [AutofillHints.password],
-                              decoration: InputDecoration(
-                                labelText: 'Mật khẩu',
-                                prefixIcon:
-                                    const Icon(Icons.lock_outline_rounded),
-                                suffixIcon: IconButton(
-                                  onPressed: () {
-                                    setState(() {
-                                      _obscurePassword = !_obscurePassword;
-                                    });
-                                  },
-                                  icon: Icon(
-                                    _obscurePassword
-                                        ? Icons.visibility_outlined
-                                        : Icons.visibility_off_outlined,
-                                  ),
-                                ),
-                              ),
-                              validator: (value) {
-                                if ((value ?? '').isEmpty) {
-                                  return 'Vui lòng nhập mật khẩu.';
-                                }
-                                return null;
-                              },
-                              onChanged: (_) {
-                                if (_errorText == null) {
-                                  return;
-                                }
-                                setState(() {
-                                  _errorText = null;
-                                });
-                              },
-                              onFieldSubmitted: (_) => _submit(),
-                            ),
-                            const SizedBox(height: 8),
-                            CheckboxListTile(
-                              value: _rememberPassword,
-                              onChanged: _isSubmitting
-                                  ? null
-                                  : (value) {
-                                      unawaited(
-                                        _onRememberPasswordChanged(value),
-                                      );
-                                    },
-                              contentPadding: EdgeInsets.zero,
-                              dense: false,
-                              controlAffinity: ListTileControlAffinity.leading,
-                              title: Text(
-                                'Nhớ mật khẩu',
-                                style: Theme.of(context)
-                                    .textTheme
-                                    .bodyMedium
-                                    ?.copyWith(
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ),
-                            if (_errorText != null) ...[
-                              const SizedBox(height: 12),
-                              Container(
-                                decoration: BoxDecoration(
-                                  color: Colors.red.shade50,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(
-                                    color: Colors.red.shade100,
-                                  ),
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 10,
-                                ),
-                                child: Text(
-                                  _errorText!,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodySmall
-                                      ?.copyWith(
-                                        color: Colors.red.shade700,
-                                        fontWeight: FontWeight.w700,
-                                      ),
-                                ),
-                              ),
-                            ],
-                            const SizedBox(height: 18),
-                            FilledButton.icon(
-                              onPressed: _isSubmitting ? null : _submit,
-                              style: FilledButton.styleFrom(
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 14),
-                              ),
-                              icon: _isSubmitting
-                                  ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Colors.white,
-                                      ),
-                                    )
-                                  : const Icon(Icons.login_rounded),
-                              label: Text(
-                                _isSubmitting
-                                    ? 'Đang đăng nhập...'
-                                    : 'Đăng nhập',
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
+    return GestureDetector(
+      onTap: () => FocusScope.of(context).unfocus(),
+      child: Scaffold(
+        backgroundColor: const Color(0xFFFFFBFB),
+        body: Stack(
+          children: [
+            Positioned.fill(child: _buildAnimatedBackground(responsive)),
+            SafeArea(
+              child: Center(
+                child: SingleChildScrollView(
+                  physics: const BouncingScrollPhysics(),
+                  padding: EdgeInsets.fromLTRB(responsive.pageHorizontalPadding,
+                      20, responsive.pageHorizontalPadding, 30),
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxWidth: cardMaxWidth),
+                    child: _build3DEntrance(
+                      child: _buildFlatForm(
+                          context, accents, theme, innerPadding, accentRed),
                     ),
                   ),
                 ),
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _build3DEntrance({required Widget child}) {
+    return AnimatedBuilder(
+      animation: _entranceController,
+      builder: (context, child) {
+        final opacity = Curves.easeOut.transform(_entranceController.value);
+        final scale =
+            0.95 + (0.05 * Curves.easeOut.transform(_entranceController.value));
+        final angle =
+            (1.0 - Curves.easeOutBack.transform(_entranceController.value)) *
+                -math.pi /
+                24; // Giảm nhẹ độ xoay cho tinh tế
+
+        return Opacity(
+          opacity: opacity,
+          child: Transform(
+            alignment: Alignment.center,
+            transform: Matrix4.identity()
+              ..setEntry(3, 2, 0.001)
+              ..scaleByDouble(scale, scale, 1, 1)
+              ..rotateX(angle),
+            child: child,
           ),
+        );
+      },
+      child: child,
+    );
+  }
+
+  // TẠO FORM PHẲNG, SẠCH (KHÔNG DÙNG KÍNH MỜ)
+  Widget _buildFlatForm(BuildContext context, AppAccentColors accents,
+      ThemeData theme, double padding, Color accentColor) {
+    return Container(
+      padding: EdgeInsets.all(padding),
+      decoration: BoxDecoration(
+        color: Colors.white, // Nền trắng tinh, phẳng
+        borderRadius: BorderRadius.circular(32),
+        border: Border.all(
+            color: const Color(0xFFFDE4E4), width: 1.5), // Viền đỏ siêu nhạt
+        boxShadow: [
+          BoxShadow(
+              color: accentColor.withValues(alpha: 0.08),
+              blurRadius: 40,
+              spreadRadius: 5,
+              offset: const Offset(0, 10)),
+        ],
+      ),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildHeader(context, accents, accentColor),
+            const SizedBox(height: 36),
+            _buildNeonInput(
+                controller: _emailController,
+                focusNode: _emailFocusNode,
+                label: 'EMAIL',
+                hint: 'Mã giáo viên',
+                icon: Icons.alternate_email_rounded,
+                neonColor: accentColor,
+                isEmail: true),
+            const SizedBox(height: 20),
+            _buildNeonInput(
+                controller: _passwordController,
+                focusNode: _passwordFocusNode,
+                label: 'MẬT KHẨU',
+                hint: '••••••',
+                icon: Icons.lock_outline_rounded,
+                neonColor: accentColor,
+                isPassword: true),
+            const SizedBox(height: 20),
+            _buildRunningLightCheckbox(accentColor),
+            _buildErrorBlock(),
+            const SizedBox(height: 32),
+            _buildSubmitButton(accentColor),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHeader(
+      BuildContext context, AppAccentColors accents, Color accentColor) {
+    return Column(
+      children: [
+        _buildCyberLogo(accentColor),
+        const SizedBox(height: 20),
+        Text(
+          'LMS Smooth Bridge',
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                color: const Color(0xFF8E1B1B),
+                fontWeight: FontWeight.w900,
+                letterSpacing: -1.0,
+              ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Quản lý lớp học thông minh.',
+          textAlign: TextAlign.center,
+          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: const Color(0xFF8E1B1B).withValues(alpha: 0.7),
+                height: 1.4,
+              ),
+        ),
+      ],
+    );
+  }
+
+  // LOGO VỚI ÁNH SÁNG LƯỚT CHÉO
+  Widget _buildCyberLogo(Color accentColor) {
+    return Container(
+      width: 70,
+      height: 70,
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF4F4), // Nền tĩnh màu hường nhạt
+        borderRadius: BorderRadius.circular(20),
+        border:
+            Border.all(color: accentColor.withValues(alpha: 0.3), width: 1.5),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: Stack(
+          children: [
+            Center(
+              child: Icon(Icons.school_rounded, color: accentColor, size: 40),
+            ),
+            // Ánh sáng lướt chéo qua logo
+            Positioned.fill(
+              child: AnimatedBuilder(
+                animation: _shimmerController,
+                builder: (context, child) {
+                  // Chạy từ -1.5 đến 2.5 để thoát hẳn ra khỏi viền rồi mới vòng lại (hết giật)
+                  final pos = -1.5 + (4.0 * _shimmerController.value);
+                  return Container(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment(pos - 0.5, pos - 0.5),
+                        end: Alignment(pos + 0.5, pos + 0.5),
+                        colors: [
+                          Colors.white.withValues(alpha: 0.0),
+                          Colors.white.withValues(alpha: 0.6), // Vệt sáng trắng
+                          Colors.white.withValues(alpha: 0.0),
+                        ],
+                        stops: const [0.0, 0.5, 1.0],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNeonInput(
+      {required TextEditingController controller,
+      required FocusNode focusNode,
+      required String label,
+      required String hint,
+      required IconData icon,
+      required Color neonColor,
+      bool isPassword = false,
+      bool isEmail = false}) {
+    final hasFocus = focusNode.hasFocus;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 6),
+          child: Text(label,
+              style: TextStyle(
+                  color: hasFocus
+                      ? neonColor
+                      : const Color(0xFF8E1B1B).withValues(alpha: 0.6),
+                  fontWeight: FontWeight.w800,
+                  fontSize: 12,
+                  letterSpacing: 1.0)),
+        ),
+        AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFF8F8), // Nền form sáng sủa hơn
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: hasFocus
+                  ? neonColor
+                  : const Color(0xFFD32F2F).withValues(alpha: 0.15),
+              width: hasFocus ? 2.0 : 1.0,
+            ),
+            boxShadow: hasFocus
+                ? [
+                    BoxShadow(
+                        color: neonColor.withValues(alpha: 0.15),
+                        blurRadius: 10,
+                        spreadRadius: 0)
+                  ]
+                : [],
+          ),
+          child: TextFormField(
+            focusNode: focusNode,
+            controller: controller,
+            obscureText: isPassword ? _obscurePassword : false,
+            keyboardType:
+                isEmail ? TextInputType.emailAddress : TextInputType.text,
+            style: const TextStyle(color: Color(0xFF2B1A1A), fontSize: 16),
+            cursorColor: neonColor,
+            decoration: InputDecoration(
+              hintText: hint,
+              hintStyle: TextStyle(
+                  color: const Color(0xFF8E1B1B).withValues(alpha: 0.4)),
+              prefixIcon: Icon(icon,
+                  color: hasFocus
+                      ? neonColor
+                      : const Color(0xFF9D4A4A).withValues(alpha: 0.5)),
+              border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              errorBorder: InputBorder.none,
+              focusedErrorBorder: InputBorder.none,
+              disabledBorder: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(vertical: 16),
+              filled: true,
+              fillColor: Colors.transparent,
+              suffixIcon: isEmail && _showMindxSuggestion
+                  ? Padding(
+                      padding: const EdgeInsets.only(right: 12),
+                      child: Center(
+                          widthFactor: 1,
+                          child: Text('@$_requiredDomain',
+                              style: TextStyle(
+                                  color: neonColor,
+                                  fontWeight: FontWeight.bold))))
+                  : isPassword
+                      ? IconButton(
+                          icon: Icon(
+                              _obscurePassword
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                              color: const Color(0xFFA34C4C)),
+                          onPressed: () => setState(
+                              () => _obscurePassword = !_obscurePassword))
+                      : null,
+            ),
+            validator: isEmail
+                ? _validateEmail
+                : (value) =>
+                    (value ?? '').isEmpty ? 'Vui lòng nhập mật khẩu.' : null,
+            onChanged: (_) {
+              if (_errorText != null) setState(() => _errorText = null);
+              if (isEmail) setState(() {});
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  // CHECKBOX VỚI ÁNH SÁNG LƯỚT CHÉO THEO NHỊP NÚT BẤM
+// CHECKBOX PHẲNG - ÁNH SÁNG CHẠY VÒNG QUANH VIỀN
+  Widget _buildRunningLightCheckbox(Color neonColor) {
+    return GestureDetector(
+      onTap: _isSubmitting
+          ? null
+          : () {
+              unawaited(_onRememberPasswordChanged(!_rememberPassword));
+            },
+      child: Row(
+        children: [
+          AnimatedBuilder(
+            animation: _shimmerController,
+            builder: (context, child) {
+              return Container(
+                width: 24,
+                height: 24,
+                // Hoàn toàn phẳng, không có BoxShadow (bỏ cảm giác gương/phát sáng)
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(6),
+                  color: _rememberPassword ? neonColor : Colors.transparent,
+                ),
+                child: _rememberPassword
+                    ? const Icon(Icons.check, size: 18, color: Colors.white)
+                    : Stack(
+                        children: [
+                          // 1. Lớp viền nền màu xám/đỏ siêu nhạt tĩnh
+                          Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                  color: neonColor.withValues(alpha: 0.2),
+                                  width: 1.5),
+                            ),
+                          ),
+                          // 2. Vệt sáng lướt vòng tròn quanh viền
+                          Positioned.fill(
+                            child: ShaderMask(
+                              shaderCallback: (rect) {
+                                // Nhân 2 chu kỳ quay để tốc độ lướt viền vừa phải (êm ái)
+                                final rotation =
+                                    _shimmerController.value * 2 * math.pi;
+                                return SweepGradient(
+                                  colors: [
+                                    neonColor.withValues(alpha: 0.0),
+                                    neonColor, // Đỉnh vệt sáng
+                                    neonColor.withValues(alpha: 0.0),
+                                  ],
+                                  stops: const [
+                                    0.0,
+                                    0.15,
+                                    0.3
+                                  ], // Vệt sáng chiếm 1 góc nhỏ trên viền
+                                  transform: GradientRotation(rotation),
+                                ).createShader(rect);
+                              },
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(6),
+                                  // Viền trắng để ShaderMask "nhuộm" màu vệt sáng lên
+                                  border: Border.all(
+                                      color: Colors.white, width: 1.5),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+              );
+            },
+          ),
+          const SizedBox(width: 12),
+          Text('Ghi nhớ đăng nhập',
+              style: TextStyle(
+                  color: const Color(0xFF8E1B1B).withValues(alpha: 0.9),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600)),
         ],
       ),
     );
   }
-}
 
-class _SoftOrb extends StatelessWidget {
-  final double size;
-  final Color color;
+  Widget _buildErrorBlock() {
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 300),
+      child: _errorText == null
+          ? const SizedBox.shrink()
+          : Container(
+              margin: const EdgeInsets.only(top: 16),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.red.withValues(alpha: 0.2))),
+              child: Row(children: [
+                const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                const SizedBox(width: 10),
+                Expanded(
+                    child: Text(_errorText!,
+                        style: const TextStyle(
+                            color: Colors.red,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13)))
+              ]),
+            ),
+    );
+  }
 
-  const _SoftOrb({
-    required this.size,
-    required this.color,
-  });
+  // NÚT BẤM PHẲNG + ÁNH SÁNG CHÉO MƯỢT MÀ
+  Widget _buildSubmitButton(Color neonColor) {
+    return Container(
+      height: 56,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+              color: neonColor.withValues(alpha: 0.25),
+              blurRadius: 15,
+              spreadRadius: 0,
+              offset: const Offset(0, 5))
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: Stack(
+          children: [
+            // Lớp nền tĩnh màu đỏ
+            Positioned.fill(
+              child: DecoratedBox(decoration: BoxDecoration(color: neonColor)),
+            ),
 
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: color,
+            // Lớp ánh sáng lướt qua (KHÔNG GIẬT KHẤC)
+            if (!_isSubmitting)
+              Positioned.fill(
+                child: AnimatedBuilder(
+                  animation: _shimmerController,
+                  builder: (context, child) {
+                    // Chạy từ -1.5 đến 2.5 để vệt sáng đi hẳn ra ngoài nút
+                    final pos = -1.5 + (4.0 * _shimmerController.value);
+                    return Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment(pos - 0.5, pos - 0.5),
+                          end: Alignment(pos + 0.5, pos + 0.5),
+                          colors: [
+                            Colors.white.withValues(alpha: 0.0),
+                            Colors.white.withValues(
+                                alpha: 0.35), // Dải sáng trắng lướt qua
+                            Colors.white.withValues(alpha: 0.0),
+                          ],
+                          stops: const [0.0, 0.5, 1.0],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+
+            Positioned.fill(
+              child: FilledButton(
+                onPressed: _isSubmitting ? null : _submit,
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.transparent,
+                  shadowColor: Colors.transparent,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16)),
+                ),
+                child: _isSubmitting
+                    ? const SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 3, color: Colors.white))
+                    : const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                            Text('ĐĂNG NHẬP',
+                                style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 1.0)),
+                            SizedBox(width: 10),
+                            Icon(Icons.arrow_forward_rounded,
+                                color: Colors.white, size: 20)
+                          ]),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAnimatedBackground(AppResponsive responsive) {
+    const baseWhite = Color(0xFFFFFBFB);
+    const accentRose = Color(0xFFFFE1E1);
+
+    return Container(
+      color: baseWhite,
+      child: AnimatedBuilder(
+        animation: _bgController,
+        builder: (context, child) {
+          final breath = _bgController.value;
+          return Stack(
+            children: [
+              const Positioned.fill(
+                  child: DecoratedBox(
+                      decoration: BoxDecoration(
+                          gradient: RadialGradient(
+                              colors: [accentRose, baseWhite],
+                              center: Alignment.center,
+                              radius: 1.2)))),
+              _buildSoftOrb(responsive.width * 0.1 - (20 * breath),
+                  responsive.height * 0.2 + (10 * breath),
+                  size: 250 + (20 * breath),
+                  alpha: 0.08,
+                  color: const Color(0xFFF8B4B4)),
+              _buildSoftOrb(responsive.width * 0.7 + (15 * breath),
+                  responsive.height * 0.6 - (15 * breath),
+                  size: 300 - (10 * breath),
+                  alpha: 0.06,
+                  color: const Color(0xFFFFC2C2)),
+              _buildSoftOrb(responsive.width * 0.4, responsive.height * 0.8,
+                  size: 200 + (30 * breath),
+                  alpha: 0.08,
+                  color: const Color(0xFFD32F2F)),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildSoftOrb(double x, double y,
+      {required double size,
+      required double alpha,
+      Color color = const Color(0xFFD32F2F)}) {
+    return Positioned(
+      left: x,
+      top: y,
+      child: IgnorePointer(
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: RadialGradient(colors: [
+              color.withValues(alpha: alpha),
+              color.withValues(alpha: 0)
+            ], stops: const [
+              0.5,
+              1.0
+            ]),
+          ),
         ),
       ),
     );
   }
 }
-

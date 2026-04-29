@@ -2,6 +2,8 @@ class AttendanceWindow {
   final String slotId;
   final int? slotIndex;
   final String? slotDate;
+  final String? roleName;
+  final String? roleShortName;
   final String slotStartTime;
   final String slotEndTime;
   final String attendanceOpenAt;
@@ -15,6 +17,8 @@ class AttendanceWindow {
     required this.slotId,
     required this.slotIndex,
     required this.slotDate,
+    required this.roleName,
+    required this.roleShortName,
     required this.slotStartTime,
     required this.slotEndTime,
     required this.attendanceOpenAt,
@@ -30,6 +34,8 @@ class AttendanceWindow {
       slotId: (json['slotId'] ?? '').toString(),
       slotIndex: (json['slotIndex'] is int) ? json['slotIndex'] as int : null,
       slotDate: json['slotDate']?.toString(),
+      roleName: json['roleName']?.toString(),
+      roleShortName: json['roleShortName']?.toString(),
       slotStartTime: (json['slotStartTime'] ?? '').toString(),
       slotEndTime: (json['slotEndTime'] ?? '').toString(),
       attendanceOpenAt: (json['attendanceOpenAt'] ?? '').toString(),
@@ -46,6 +52,8 @@ class AttendanceWindow {
       'slotId': slotId,
       'slotIndex': slotIndex,
       'slotDate': slotDate,
+      'roleName': roleName,
+      'roleShortName': roleShortName,
       'slotStartTime': slotStartTime,
       'slotEndTime': slotEndTime,
       'attendanceOpenAt': attendanceOpenAt,

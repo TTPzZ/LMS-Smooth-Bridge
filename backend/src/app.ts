@@ -59,7 +59,7 @@ async function buildAppContext(): Promise<AppContext> {
     const payrollService = new PayrollService(lmsService);
 
     app.use('/api', createClassRouter(lmsService));
-    app.use('/api', createDeviceRouter(deviceService));
+    app.use('/api', createDeviceRouter(deviceService, lmsService));
     app.use('/api', createNotifierRouter(notifierService));
     app.use('/api', createPayrollRouter(payrollService));
     app.get('/api/public-config', (_req, res) => {

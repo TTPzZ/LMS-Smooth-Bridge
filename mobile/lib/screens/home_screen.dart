@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -11,7 +11,9 @@ import '../services/auth_session_manager.dart';
 import '../services/backend_api_service.dart';
 import '../services/dashboard_cache_service.dart';
 import '../services/local_notification_service.dart';
-import '../theme/app_theme.dart';
+import '../theme/responsive.dart';
+
+part 'widgets/home_screen_widgets.dart';
 
 String _formatDurationMinutesVi(
   int minutes, {
@@ -71,10 +73,12 @@ class _DashboardOverviewBundle {
   });
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   static const Duration _classesCacheTtl = Duration(minutes: 20);
   static const Duration _remindersCacheTtl = Duration(minutes: 8);
   static const Duration _payrollCacheTtl = Duration(minutes: 20);
+  static const Duration _shimmerDuration = Duration(milliseconds: 6500);
+  static const Duration _shimmerPauseDuration = Duration(seconds: 2);
   static const Duration _tabSwitchDuration = Duration(milliseconds: 240);
   static const int _overviewLookAheadMinutes = 12 * 60;
   static const int _overviewMaxSlots = 30;
@@ -126,9 +130,15 @@ class _HomeScreenState extends State<HomeScreen> {
   final Map<String, GlobalKey> _classCardKeyByClassId = {};
   String? _pendingRevealClassId;
   int _pendingRevealAttempts = 0;
+  String? _staleUsername;
+  List<ClassSummary>? _staleClasses;
+  List<ReminderItem>? _staleReminders;
+  final Map<String, PayrollResponse> _stalePayrollByPeriod = {};
   List<ClassSummary>? _cachedClassesSource;
   List<ReminderItem>? _cachedRemindersSource;
   _ClassesPageComputed? _cachedClassesPageComputed;
+
+  late AnimationController _shimmerController;
 
   @override
   void initState() {
@@ -149,6 +159,11 @@ class _HomeScreenState extends State<HomeScreen> {
       baseUrl: AppConfig.apiBaseUrl.trim(),
       idTokenProvider: _provideIdToken,
     );
+
+    _shimmerController =
+        AnimationController(vsync: this, duration: _shimmerDuration);
+    unawaited(_runShimmerLoop());
+
     _setFutures(forceNetwork: false);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_runPostLoginNotices());
@@ -161,7 +176,20 @@ class _HomeScreenState extends State<HomeScreen> {
     _pageController.dispose();
     _hourlyRateController.dispose();
     _manualAdjustmentController.dispose();
+    _shimmerController.dispose();
     super.dispose();
+  }
+
+  Future<void> _runShimmerLoop() async {
+    while (mounted) {
+      try {
+        await _shimmerController.forward(from: 0);
+      } on TickerCanceled {
+        return;
+      }
+      if (!mounted) return;
+      await Future<void>.delayed(_shimmerPauseDuration);
+    }
   }
 
   Future<String?> _provideIdToken({bool forceRefresh = false}) async {
@@ -293,13 +321,72 @@ class _HomeScreenState extends State<HomeScreen> {
     return payroll;
   }
 
+  String _payrollPeriodKey({
+    required int month,
+    required int year,
+  }) {
+    final normalizedMonth = month.toString().padLeft(2, '0');
+    return '$year-$normalizedMonth';
+  }
+
+  PayrollResponse? _stalePayrollForPeriod({
+    int? month,
+    int? year,
+  }) {
+    final resolvedMonth = month ?? _selectedPayrollMonth;
+    final resolvedYear = year ?? _selectedPayrollYear;
+    final key = _payrollPeriodKey(month: resolvedMonth, year: resolvedYear);
+    return _stalePayrollByPeriod[key];
+  }
+
+  void _rememberOverviewData(
+    String username,
+    _DashboardOverviewBundle bundle,
+  ) {
+    _staleUsername = username;
+    _staleClasses = bundle.classes;
+    _staleReminders = bundle.reminders;
+  }
+
+  void _rememberPayrollData(
+    String username,
+    PayrollResponse payroll,
+  ) {
+    _staleUsername = username;
+    final key = _payrollPeriodKey(month: payroll.month, year: payroll.year);
+    _stalePayrollByPeriod[key] = payroll;
+  }
+
+  void _resetStaleDataForNewUser(String username) {
+    if (_staleUsername == null || _staleUsername == username) {
+      return;
+    }
+    _staleClasses = null;
+    _staleReminders = null;
+    _stalePayrollByPeriod.clear();
+    _staleUsername = username;
+  }
+
   void _setFutures({required bool forceNetwork}) {
     _clearClassesPageComputedCache();
     final username = _session.username.trim().toLowerCase();
+    _resetStaleDataForNewUser(username);
     final overviewFuture = _loadClassesAndReminders(
       username: username,
       forceNetwork: forceNetwork,
-    );
+    ).then((value) {
+      _rememberOverviewData(username, value);
+      return value;
+    });
+    final payrollFuture = _loadPayroll(
+      username: username,
+      month: _selectedPayrollMonth,
+      year: _selectedPayrollYear,
+      forceNetwork: forceNetwork,
+    ).then((value) {
+      _rememberPayrollData(username, value);
+      return value;
+    });
 
     setState(() {
       _classesFuture = overviewFuture.then((value) => value.classes);
@@ -308,24 +395,23 @@ class _HomeScreenState extends State<HomeScreen> {
             value.classes,
             value.reminders,
           ]);
-      _payrollFuture = overviewFuture.then((_) => _loadPayroll(
-            username: username,
-            month: _selectedPayrollMonth,
-            year: _selectedPayrollYear,
-            forceNetwork: forceNetwork,
-          ));
+      _payrollFuture = payrollFuture;
     });
   }
 
   void _reloadPayrollOnly({bool forceNetwork = false}) {
     final username = _session.username.trim().toLowerCase();
+    _resetStaleDataForNewUser(username);
     setState(() {
       _payrollFuture = _loadPayroll(
         username: username,
         month: _selectedPayrollMonth,
         year: _selectedPayrollYear,
         forceNetwork: forceNetwork,
-      );
+      ).then((value) {
+        _rememberPayrollData(username, value);
+        return value;
+      });
     });
   }
 
@@ -359,6 +445,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     final username = _session.username.trim().toLowerCase();
+    _resetStaleDataForNewUser(username);
     setState(() {
       _selectedPayrollMonth = nextMonth;
       _selectedPayrollYear = nextYear;
@@ -367,7 +454,10 @@ class _HomeScreenState extends State<HomeScreen> {
         month: _selectedPayrollMonth,
         year: _selectedPayrollYear,
         forceNetwork: false,
-      );
+      ).then((value) {
+        _rememberPayrollData(username, value);
+        return value;
+      });
     });
   }
 
@@ -381,100 +471,91 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       action = await showModalBottomSheet<_PullQuickAction>(
         context: context,
-        backgroundColor: Colors.transparent,
+        backgroundColor: Colors.white,
         barrierColor: Colors.black.withValues(alpha: 0.22),
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
         builder: (sheetContext) {
           return SafeArea(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: const LinearGradient(
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                    colors: [
-                      Color(0xFF0C2548),
-                      Color(0xFF1A4D93),
-                    ],
-                  ),
-                  borderRadius: BorderRadius.circular(22),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0x3D0A1B35),
-                      blurRadius: 26,
-                      offset: Offset(0, 10),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Drag handle
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade300,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
                     ),
-                  ],
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Tác vụ nhanh',
-                        style:
-                            Theme.of(context).textTheme.titleMedium?.copyWith(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Vuốt xuống từ đầu trang để mở bảng này.',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Colors.white.withValues(alpha: 0.84),
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                      const SizedBox(height: 12),
-                      LayoutBuilder(
-                        builder: (context, constraints) {
-                          final reloadAction = _PullActionButton(
-                            icon: Icons.refresh_rounded,
-                            title: 'Tải lại',
-                            subtitle: tabIndex == 2
-                                ? 'Làm mới thu nhập'
-                                : 'Làm mới dữ liệu',
-                            accent: const Color(0xFF2B8CFF),
-                            onPressed: () => Navigator.of(sheetContext).pop(
-                              _PullQuickAction.reload,
-                            ),
-                          );
-                          final signOutAction = _PullActionButton(
-                            icon: Icons.logout_rounded,
-                            title: 'Đăng xuất',
-                            subtitle: 'Thoát phiên hiện tại',
-                            accent: const Color(0xFFFF6B57),
-                            onPressed: () => Navigator.of(sheetContext).pop(
-                              _PullQuickAction.signOut,
-                            ),
-                          );
-
-                          if (constraints.maxWidth >= 460) {
-                            return Row(
-                              children: [
-                                Expanded(child: reloadAction),
-                                const SizedBox(width: 10),
-                                Expanded(child: signOutAction),
-                              ],
-                            );
-                          }
-
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              reloadAction,
-                              const SizedBox(height: 10),
-                              signOutAction,
-                            ],
-                          );
-                        },
-                      ),
-                    ],
                   ),
-                ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Tác vụ nhanh',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: const Color(0xFF8E1B1B),
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Vuốt xuống từ đầu trang để mở bảng này.',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Colors.blueGrey.shade600,
+                          fontWeight: FontWeight.w500,
+                        ),
+                  ),
+                  const SizedBox(height: 12),
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final reloadAction = _PullActionButton(
+                        icon: Icons.refresh_rounded,
+                        title: 'Tải lại',
+                        subtitle: tabIndex == 2
+                            ? 'Làm mới thu nhập'
+                            : 'Làm mới dữ liệu',
+                        accent: const Color(0xFFD32F2F),
+                        onPressed: () => Navigator.of(sheetContext).pop(
+                          _PullQuickAction.reload,
+                        ),
+                      );
+                      final signOutAction = _PullActionButton(
+                        icon: Icons.logout_rounded,
+                        title: 'Đăng xuất',
+                        subtitle: 'Thoát phiên hiện tại',
+                        accent: const Color(0xFFF59E0B),
+                        onPressed: () => Navigator.of(sheetContext).pop(
+                          _PullQuickAction.signOut,
+                        ),
+                      );
+
+                      if (constraints.maxWidth >= 460) {
+                        return Row(
+                          children: [
+                            Expanded(child: reloadAction),
+                            const SizedBox(width: 10),
+                            Expanded(child: signOutAction),
+                          ],
+                        );
+                      }
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          reloadAction,
+                          const SizedBox(height: 10),
+                          signOutAction,
+                        ],
+                      );
+                    },
+                  ),
+                ],
               ),
             ),
           );
@@ -598,8 +679,8 @@ class _HomeScreenState extends State<HomeScreen> {
                             begin: Alignment.topLeft,
                             end: Alignment.bottomRight,
                             colors: [
-                              Color(0xFF1457B8),
-                              Color(0xFF07A5A5),
+                              Color(0xFFD32F2F),
+                              Color(0xFFF59E0B),
                             ],
                           ),
                           borderRadius: BorderRadius.circular(11),
@@ -639,7 +720,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           vertical: 8,
                         ),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFF3F8FF),
+                          color: const Color(0xFFFFF4F4),
                           borderRadius: BorderRadius.circular(10),
                         ),
                         child: Row(
@@ -647,7 +728,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             Icon(
                               Icons.swipe_down_alt_rounded,
                               size: 18,
-                              color: Colors.blue.shade700,
+                              color: Colors.red.shade700,
                             ),
                             const SizedBox(width: 8),
                             Expanded(
@@ -657,7 +738,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                     .textTheme
                                     .bodySmall
                                     ?.copyWith(
-                                      color: Colors.blue.shade700,
+                                      color: Colors.red.shade700,
                                       fontWeight: FontWeight.w700,
                                     ),
                               ),
@@ -668,6 +749,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       const SizedBox(height: 8),
                       CheckboxListTile(
                         value: doNotShowAgain,
+                        activeColor: const Color(0xFFD32F2F),
                         onChanged: (value) {
                           setDialogState(() {
                             doNotShowAgain = value ?? false;
@@ -780,7 +862,7 @@ class _HomeScreenState extends State<HomeScreen> {
                       width: 38,
                       height: 38,
                       decoration: BoxDecoration(
-                        color: const Color(0xFFFFF3E8),
+                        color: const Color(0xFFFFF4E5),
                         borderRadius: BorderRadius.circular(11),
                       ),
                       child: Icon(
@@ -826,7 +908,7 @@ class _HomeScreenState extends State<HomeScreen> {
                               child: Icon(
                                 Icons.circle,
                                 size: 8,
-                                color: Color(0xFF1F4D8F),
+                                color: Color(0xFF8E1B1B),
                               ),
                             ),
                             const SizedBox(width: 8),
@@ -861,10 +943,17 @@ class _HomeScreenState extends State<HomeScreen> {
                 actions: [
                   OutlinedButton(
                     onPressed: () => Navigator.of(dialogContext).pop(false),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFD32F2F),
+                      side: BorderSide(color: Colors.red.shade100),
+                    ),
                     child: const Text('Để sau'),
                   ),
                   FilledButton(
                     onPressed: () => Navigator.of(dialogContext).pop(true),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFFD32F2F),
+                    ),
                     child: const Text('Xem lớp'),
                   ),
                 ],
@@ -2021,7 +2110,7 @@ class _HomeScreenState extends State<HomeScreen> {
       case _AttendanceUiStatus.late:
         return Colors.orange.shade700;
       case _AttendanceUiStatus.excusedAbsent:
-        return Colors.blue.shade700;
+        return const Color(0xFFD32F2F); // Đổi sang đỏ thay vì xanh
       case _AttendanceUiStatus.unexcusedAbsent:
         return Colors.red.shade700;
     }
@@ -2155,74 +2244,577 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  Widget _buildUserHeader() {
-    final accents = Theme.of(context).extension<AppAccentColors>()!;
+  // --- BOTTOM SHEET: NHẬN XÉT HỌC VIÊN ---
+  void _showCommentBottomSheet({
+    required BuildContext context,
+    required ClassSummary cls,
+    required String saveSlotId,
+    required String previousSlotId,
+    required List<String> studentNames,
+    required List<_StudentCommentDraft> commentDrafts,
+    required List<_StudentCommentDraft> previousCommentDrafts,
+    required String previousCommentHeader,
+    required String previousMissingMessage,
+    required bool isLoadingComments,
+    required bool isLoadingPreviousComments,
+    required String? commentsError,
+    required String? previousCommentsError,
+    required bool isSavingComments,
+    required bool isSavingPreviousComments,
+    required String? savingDraftKey,
+    required String? savingPreviousDraftKey,
+  }) {
+    final commentInputDecoration = InputDecoration(
+      hintText: 'Nhập nhận xét...',
+      filled: true,
+      fillColor: const Color(0xFFFFF8F8),
+      contentPadding: const EdgeInsets.all(12),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFFFDE4E4)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: Color(0xFFD32F2F), width: 2),
+      ),
+    );
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (statefulContext, setSheetState) {
+            return DraggableScrollableSheet(
+              expand: false,
+              initialChildSize: 0.7,
+              minChildSize: 0.4,
+              maxChildSize: 0.95,
+              builder: (_, scrollController) {
+                return Padding(
+                  padding: EdgeInsets.only(
+                    bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
+                  ),
+                  child: Column(
+                    children: [
+                      // Handle
+                      Padding(
+                        padding: const EdgeInsets.only(top: 12, bottom: 8),
+                        child: Center(
+                          child: Container(
+                            width: 40,
+                            height: 4,
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade300,
+                              borderRadius: BorderRadius.circular(2),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'Nhận xét · ${cls.className}',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(
+                                      color: const Color(0xFF8E1B1B),
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.close_rounded,
+                                  color: Color(0xFF8E1B1B)),
+                              onPressed: () => Navigator.of(sheetContext).pop(),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(height: 1, color: Color(0xFFFDE4E4)),
+                      Expanded(
+                        child: ListView(
+                          controller: scrollController,
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                          children: [
+                            // --- PREVIOUS WEEK SECTION ---
+                            Text(
+                              previousCommentHeader,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(color: const Color(0xFF8E1B1B)),
+                            ),
+                            const SizedBox(height: 8),
+                            if (previousSlotId.isEmpty)
+                              const _EmptyLabel(
+                                message:
+                                    'Chưa có dữ liệu tuần trước để kiểm tra nhận xét.',
+                              )
+                            else if (isLoadingPreviousComments)
+                              const _InlineLoading()
+                            else if (previousCommentsError != null)
+                              _ErrorLabel(message: previousCommentsError)
+                            else if (previousCommentDrafts.isEmpty)
+                              const _EmptyLabel(
+                                message:
+                                    'Tuần trước tất cả học viên đã có nhận xét.',
+                              )
+                            else ...[
+                              if (previousMissingMessage.isNotEmpty)
+                                Container(
+                                  width: double.infinity,
+                                  margin: const EdgeInsets.only(bottom: 10),
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFFF4E5),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                        color: const Color(0xFFF5D0A9)),
+                                  ),
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Padding(
+                                        padding: EdgeInsets.only(top: 1),
+                                        child: Icon(
+                                          Icons.warning_amber_rounded,
+                                          color: Color(0xFFB45309),
+                                          size: 18,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          previousMissingMessage,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .bodySmall
+                                              ?.copyWith(
+                                                color: const Color(0xFF92400E),
+                                                fontWeight: FontWeight.w700,
+                                              ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ...previousCommentDrafts.map((item) {
+                                return Container(
+                                  margin: const EdgeInsets.only(bottom: 10),
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFFFBEB),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                        color: const Color(0xFFF3D9AA)),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        item.name,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                                fontWeight: FontWeight.w700),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      TextFormField(
+                                        key: ValueKey<String>(
+                                            'sheet_prev_${cls.classId}_${item.key}_$previousSlotId'),
+                                        initialValue: item.comment,
+                                        minLines: 2,
+                                        maxLines: 4,
+                                        decoration:
+                                            commentInputDecoration.copyWith(
+                                          hintText:
+                                              'Nhập nhận xét cho học viên tuần trước',
+                                          enabledBorder: OutlineInputBorder(
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                            borderSide: const BorderSide(
+                                                color: Color(0xFFF3D9AA)),
+                                          ),
+                                          focusedBorder: OutlineInputBorder(
+                                            borderRadius:
+                                                BorderRadius.circular(10),
+                                            borderSide: const BorderSide(
+                                                color: Color(0xFFF59E0B),
+                                                width: 2),
+                                          ),
+                                        ),
+                                        onChanged: (value) {
+                                          _updatePreviousStudentCommentDraft(
+                                            classId: cls.classId,
+                                            key: item.key,
+                                            comment: value,
+                                          );
+                                        },
+                                      ),
+                                      const SizedBox(height: 8),
+                                      _buildSweepButton(
+                                        color: const Color(0xFFF59E0B),
+                                        label: isSavingPreviousComments &&
+                                                savingPreviousDraftKey ==
+                                                    item.key
+                                            ? 'Đang lưu...'
+                                            : 'Lưu nhận xét tuần trước',
+                                        icon: Icons.save_rounded,
+                                        isLoading: isSavingPreviousComments &&
+                                            savingPreviousDraftKey == item.key,
+                                        onPressed: isSavingPreviousComments
+                                            ? null
+                                            : () =>
+                                                _savePreviousWeekStudentCommentForClass(
+                                                  classId: cls.classId,
+                                                  slotId: previousSlotId,
+                                                  draft: item,
+                                                ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }),
+                            ],
+                            const SizedBox(height: 12),
+                            const Divider(height: 1, color: Color(0xFFFDE4E4)),
+                            const SizedBox(height: 12),
+                            // --- NEXT SLOT COMMENTS ---
+                            Text(
+                              'Nhận xét từng học viên',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(color: const Color(0xFF8E1B1B)),
+                            ),
+                            const SizedBox(height: 8),
+                            if (saveSlotId.isEmpty)
+                              const _EmptyLabel(
+                                message: 'Chưa có slot sắp tới để nhận xét.',
+                              )
+                            else if (isLoadingComments)
+                              const _InlineLoading()
+                            else if (commentsError != null)
+                              _ErrorLabel(message: commentsError)
+                            else if (commentDrafts.isEmpty)
+                              const _EmptyLabel(
+                                message:
+                                    'Chưa có học viên để nhận xét cho slot này.',
+                              )
+                            else ...[
+                              ...commentDrafts.map((item) {
+                                return Container(
+                                  margin: const EdgeInsets.only(bottom: 10),
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFFF8F8),
+                                    borderRadius: BorderRadius.circular(12),
+                                    border: Border.all(
+                                        color: const Color(0xFFFDE4E4)),
+                                  ),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        item.name,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodyMedium
+                                            ?.copyWith(
+                                                fontWeight: FontWeight.w700),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      TextFormField(
+                                        key: ValueKey<String>(
+                                            'sheet_comment_${cls.classId}_${item.key}_$saveSlotId'),
+                                        initialValue: item.comment,
+                                        minLines: 2,
+                                        maxLines: 4,
+                                        decoration: commentInputDecoration,
+                                        onChanged: (value) {
+                                          _updateStudentCommentDraft(
+                                            classId: cls.classId,
+                                            key: item.key,
+                                            comment: value,
+                                          );
+                                        },
+                                      ),
+                                      const SizedBox(height: 8),
+                                      _buildSweepButton(
+                                        label: isSavingComments &&
+                                                savingDraftKey == item.key
+                                            ? 'Đang lưu...'
+                                            : 'Lưu nhận xét học viên này',
+                                        icon: Icons.save_rounded,
+                                        isLoading: isSavingComments &&
+                                            savingDraftKey == item.key,
+                                        onPressed: isSavingComments
+                                            ? null
+                                            : () =>
+                                                _saveSingleStudentCommentForClass(
+                                                  classId: cls.classId,
+                                                  slotId: saveSlotId,
+                                                  draft: item,
+                                                  studentNames: studentNames,
+                                                ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // --- WIDGET HELPER: NÚT BẤM CÓ HIỆU ỨNG ÁNH SÁNG LƯỚT CHÉO ---
+  Widget _buildSweepButton({
+    required String label,
+    required IconData icon,
+    required bool isLoading,
+    required VoidCallback? onPressed,
+    Color color = const Color(0xFFD32F2F),
+  }) {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-      padding: const EdgeInsets.all(18),
+      height: 48,
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            Colors.blue.shade700,
-            Colors.blue.shade500,
-            const Color(0xFF07A5A5),
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+              color: color.withValues(alpha: 0.25),
+              blurRadius: 12,
+              spreadRadius: 0,
+              offset: const Offset(0, 4))
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: DecoratedBox(decoration: BoxDecoration(color: color)),
+            ),
+            if (!isLoading)
+              Positioned.fill(
+                child: AnimatedBuilder(
+                  animation: _shimmerController,
+                  builder: (context, child) {
+                    final pos = -1.5 + (4.0 * _shimmerController.value);
+                    return Container(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment(pos - 0.5, pos - 0.5),
+                          end: Alignment(pos + 0.5, pos + 0.5),
+                          colors: [
+                            Colors.white.withValues(alpha: 0.0),
+                            Colors.white.withValues(alpha: 0.35),
+                            Colors.white.withValues(alpha: 0.0),
+                          ],
+                          stops: const [0.0, 0.5, 1.0],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            Positioned.fill(
+              child: FilledButton.icon(
+                onPressed: onPressed,
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.transparent,
+                  shadowColor: Colors.transparent,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                icon: isLoading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white),
+                      )
+                    : Icon(icon, color: Colors.white, size: 18),
+                label: Text(
+                  label,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ),
+            ),
           ],
         ),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          CircleAvatar(
-            radius: 24,
-            backgroundColor: Colors.white.withValues(alpha: 0.22),
-            child: Text(
-              _session.username.isEmpty
-                  ? '?'
-                  : _session.username.substring(0, 1).toUpperCase(),
-              style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w800,
-                  ),
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Xin chào, ${_session.username}',
-                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w800,
-                      ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  _session.email,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Colors.white.withValues(alpha: 0.92),
-                      ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Chúc bạn có một ngày tốt lành.',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Colors.white.withValues(alpha: 0.84),
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
-              ],
-            ),
-          ),
-          Icon(
-            Icons.auto_awesome_rounded,
-            color: accents.warning.withValues(alpha: 0.85),
-          ),
+    );
+  }
+
+  double _contentHorizontalPadding(AppResponsive responsive) {
+    final centeredPadding = (responsive.width - responsive.contentMaxWidth) / 2;
+    if (centeredPadding > responsive.pageHorizontalPadding) {
+      return centeredPadding;
+    }
+    return responsive.pageHorizontalPadding;
+  }
+
+  EdgeInsets _pagePadding(
+    AppResponsive responsive, {
+    double top = 12,
+    double bottom = 100, // Tăng đáy lên 100 để không bị che bởi taskbar nổi
+  }) {
+    final horizontal = _contentHorizontalPadding(responsive);
+    return EdgeInsets.fromLTRB(horizontal, top, horizontal, bottom);
+  }
+
+  Widget _buildUserHeader(AppResponsive responsive) {
+    final headerRadius = BorderRadius.circular(
+      responsive.sectionGap(compact: 16, medium: 18, expanded: 20),
+    );
+
+    return Container(
+      margin: EdgeInsets.only(
+        top: responsive.sectionGap(compact: 6, medium: 8, expanded: 10),
+        bottom: responsive.sectionGap(compact: 8, medium: 10, expanded: 12),
+      ),
+      decoration: BoxDecoration(
+        borderRadius: headerRadius,
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Color(0xFFD32F2F),
+            Color(0xFF8E1B1B),
+          ],
+        ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x29D32F2F),
+            blurRadius: 20,
+            offset: Offset(0, 8),
+          )
         ],
+      ),
+      child: ClipRRect(
+        borderRadius: headerRadius,
+        child: Stack(
+          children: [
+            Padding(
+              padding: EdgeInsets.all(
+                responsive.sectionGap(compact: 14, medium: 16, expanded: 18),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  CircleAvatar(
+                    radius: responsive.isCompact ? 22 : 24,
+                    backgroundColor: Colors.white.withValues(alpha: 0.22),
+                    child: Text(
+                      _session.username.isEmpty
+                          ? '?'
+                          : _session.username.substring(0, 1).toUpperCase(),
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                            fontSize: responsive.scale(20),
+                          ),
+                    ),
+                  ),
+                  SizedBox(
+                    width: responsive.sectionGap(
+                        compact: 10, medium: 12, expanded: 14),
+                  ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Xin chào, ${_session.username}',
+                          style:
+                              Theme.of(context).textTheme.titleLarge?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _session.email,
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: Colors.white.withValues(alpha: 0.92),
+                                  ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'Chúc bạn có một ngày giảng dạy tốt lành.',
+                          style:
+                              Theme.of(context).textTheme.bodySmall?.copyWith(
+                                    color: Colors.white.withValues(alpha: 0.84),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    Icons.auto_awesome_rounded,
+                    color: const Color(0xFFFDE4E4).withValues(alpha: 0.85),
+                  ),
+                ],
+              ),
+            ),
+            Positioned.fill(
+              child: IgnorePointer(
+                child: AnimatedBuilder(
+                  animation: _shimmerController,
+                  builder: (context, child) {
+                    final pos = -1.5 + (4.0 * _shimmerController.value);
+                    return DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment(pos - 0.5, pos - 0.5),
+                          end: Alignment(pos + 0.5, pos + 0.5),
+                          colors: [
+                            Colors.white.withValues(alpha: 0.0),
+                            Colors.white.withValues(alpha: 0.34),
+                            Colors.white.withValues(alpha: 0.0),
+                          ],
+                          stops: const [0.0, 0.5, 1.0],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2258,27 +2850,43 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildOverviewPage() {
+    final responsive = AppResponsive.of(context);
+    final sectionGap = responsive.sectionGap(
+      compact: 10,
+      medium: 12,
+      expanded: 14,
+    );
+    final wrapGap = responsive.sectionGap(
+      compact: 8,
+      medium: 10,
+      expanded: 12,
+    );
+
     return RefreshIndicator(
+      color: const Color(0xFFD32F2F),
       onRefresh: () => _showPullActionsSheet(tabIndex: 0),
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+        padding: _pagePadding(responsive, top: 6, bottom: 100),
         children: [
-          _buildUserHeader(),
-          const SizedBox(height: 10),
+          _buildUserHeader(responsive),
+          SizedBox(height: sectionGap),
           _SectionCard(
             title: 'Tổng quan nhanh',
-            child: Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                FutureBuilder<List<ClassSummary>>(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final useSingleColumn = constraints.maxWidth < 560;
+
+                final classesTile = FutureBuilder<List<ClassSummary>>(
                   future: _classesFuture,
                   builder: (context, snapshot) {
-                    if (!snapshot.hasData) {
-                      return const _KpiTile.loading(label: 'Lớp đang dạy');
+                    final classes = snapshot.data ?? _staleClasses;
+                    if (classes == null) {
+                      return const _KpiTile.loading(
+                        label: 'Lớp đang dạy',
+                        stretch: true,
+                      );
                     }
-                    final classes = snapshot.data ?? const <ClassSummary>[];
                     final students = classes.fold<int>(
                       0,
                       (sum, cls) => sum + cls.totalStudents,
@@ -2288,16 +2896,21 @@ class _HomeScreenState extends State<HomeScreen> {
                       value: classes.length.toString(),
                       hint: '$students học viên',
                       icon: Icons.menu_book_rounded,
+                      stretch: true,
                     );
                   },
-                ),
-                FutureBuilder<List<ReminderItem>>(
+                );
+
+                final remindersTile = FutureBuilder<List<ReminderItem>>(
                   future: _remindersFuture,
                   builder: (context, snapshot) {
-                    if (!snapshot.hasData) {
-                      return const _KpiTile.loading(label: 'Lịch sắp tới');
+                    final reminders = snapshot.data ?? _staleReminders;
+                    if (reminders == null) {
+                      return const _KpiTile.loading(
+                        label: 'Lịch sắp tới',
+                        stretch: true,
+                      );
                     }
-                    final reminders = snapshot.data ?? const <ReminderItem>[];
                     final openCount =
                         reminders.where((item) => item.isWindowOpen).length;
                     return _KpiTile(
@@ -2305,16 +2918,21 @@ class _HomeScreenState extends State<HomeScreen> {
                       value: reminders.length.toString(),
                       hint: '$openCount khung đang mở',
                       icon: Icons.event_available_rounded,
+                      stretch: true,
                     );
                   },
-                ),
-                FutureBuilder<PayrollResponse>(
+                );
+
+                final incomeTile = FutureBuilder<PayrollResponse>(
                   future: _payrollFuture,
                   builder: (context, snapshot) {
-                    if (!snapshot.hasData) {
-                      return const _KpiTile.loading(label: 'Thu nhập');
+                    final payroll = snapshot.data ?? _stalePayrollForPeriod();
+                    if (payroll == null) {
+                      return const _KpiTile.loading(
+                        label: 'Thu nhập',
+                        stretch: true,
+                      );
                     }
-                    final payroll = snapshot.data!;
                     final money = _calculatePayrollMoney(
                       payroll,
                       _parseHourlyRate(),
@@ -2326,26 +2944,48 @@ class _HomeScreenState extends State<HomeScreen> {
                       hint: 'Tháng ${payroll.month}/${payroll.year}',
                       icon: Icons.payments_rounded,
                       wide: true,
+                      stretch: true,
                     );
                   },
-                ),
-              ],
+                );
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (useSingleColumn) ...[
+                      classesTile,
+                      SizedBox(height: wrapGap),
+                      remindersTile,
+                    ] else ...[
+                      Row(
+                        children: [
+                          Expanded(child: classesTile),
+                          SizedBox(width: wrapGap),
+                          Expanded(child: remindersTile),
+                        ],
+                      ),
+                    ],
+                    SizedBox(height: wrapGap),
+                    incomeTile,
+                  ],
+                );
+              },
             ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: sectionGap),
           _SectionCard(
             title: 'Lớp chưa nhận xét',
             subtitle: 'Các lớp còn học viên chưa nhận xét tuần trước',
             child: FutureBuilder<List<ClassSummary>>(
               future: _classesFuture,
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const _InlineLoading();
-                }
-                if (snapshot.hasError) {
+                final classes = snapshot.data ?? _staleClasses;
+                if (snapshot.hasError && classes == null) {
                   return _ErrorLabel(message: snapshot.error.toString());
                 }
-                final classes = snapshot.data ?? const <ClassSummary>[];
+                if (classes == null) {
+                  return const _CardListSkeleton(itemCount: 3);
+                }
                 final pendingClasses = classes
                     .where(
                       (cls) =>
@@ -2386,8 +3026,8 @@ class _HomeScreenState extends State<HomeScreen> {
                     final missingCount =
                         commentContext?.missingCommentStudentCount ?? 0;
                     final sessionLabel = commentContext?.sessionNumber != null
-                        ? 'Buoi ${commentContext!.sessionNumber}'
-                        : 'Tuan truoc';
+                        ? 'Buổi ${commentContext!.sessionNumber}'
+                        : 'Tuần trước';
                     final slotStartLabel =
                         _formatDateTime(commentContext?.slotStartTime);
                     final missingNames =
@@ -2405,7 +3045,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       margin: const EdgeInsets.only(bottom: 10),
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(14),
-                        border: Border.all(color: Colors.blueGrey.shade100),
+                        border: Border.all(color: const Color(0xFFFDE4E4)),
+                        color: Colors.white,
                       ),
                       child: ListTile(
                         onTap: () => _jumpToClassCommentFromOverview(cls),
@@ -2437,33 +3078,37 @@ class _HomeScreenState extends State<HomeScreen> {
               },
             ),
           ),
-          const SizedBox(height: 12),
+          SizedBox(height: sectionGap),
           _SectionCard(
             title: 'Lớp học đang phụ trách',
             child: FutureBuilder<List<ClassSummary>>(
               future: _classesFuture,
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const _InlineLoading();
-                }
-                if (snapshot.hasError) {
+                final classes = snapshot.data ?? _staleClasses;
+                if (snapshot.hasError && classes == null) {
                   return _ErrorLabel(message: snapshot.error.toString());
                 }
-                final classes = snapshot.data ?? const <ClassSummary>[];
+                if (classes == null) {
+                  return const _ChipSkeletonWrap(itemCount: 6);
+                }
                 if (classes.isEmpty) {
                   return const _EmptyLabel(message: 'Chưa có lớp đang chạy.');
                 }
 
                 return Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                  spacing: wrapGap,
+                  runSpacing: wrapGap,
                   children: classes
                       .take(8)
                       .map(
                         (cls) => Chip(
-                          avatar: const Icon(Icons.school_rounded, size: 16),
+                          backgroundColor: const Color(0xFFFFF4F4),
+                          side: const BorderSide(color: Color(0xFFFDE4E4)),
+                          avatar: const Icon(Icons.school_rounded,
+                              size: 16, color: Color(0xFFD32F2F)),
                           label: Text(
                             '${cls.className} · ${cls.totalStudents} HV',
+                            style: const TextStyle(color: Color(0xFF8E1B1B)),
                           ),
                         ),
                       )
@@ -2478,19 +3123,49 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildClassesPage() {
+    final responsive = AppResponsive.of(context);
+    final sectionGap = responsive.sectionGap(
+      compact: 8,
+      medium: 10,
+      expanded: 12,
+    );
+
     return RefreshIndicator(
+      color: const Color(0xFFD32F2F),
       onRefresh: () => _showPullActionsSheet(tabIndex: 1),
       child: FutureBuilder<List<Object>>(
         future: _classesAndRemindersFuture,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
+          final staleClasses = _staleClasses;
+          final staleReminders = _staleReminders;
+          final hasStaleData = staleClasses != null;
+          final isRefreshing =
+              snapshot.connectionState == ConnectionState.waiting;
+
+          if (snapshot.hasError && !hasStaleData) {
             return _ErrorView(message: snapshot.error.toString());
           }
+          if (isRefreshing && !hasStaleData) {
+            return ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: _pagePadding(responsive),
+              children: const [
+                _ClassesPageSkeletonCard(),
+                SizedBox(height: 10),
+                _ClassesPageSkeletonCard(),
+                SizedBox(height: 10),
+                _ClassesPageSkeletonCard(),
+              ],
+            );
+          }
 
-          final payload = snapshot.data ?? const <Object>[];
+          final payload = snapshot.data ??
+              (hasStaleData
+                  ? <Object>[
+                      staleClasses,
+                      staleReminders ?? const <ReminderItem>[]
+                    ]
+                  : const <Object>[]);
           final classesSource =
               payload.isNotEmpty && payload.first is List<ClassSummary>
                   ? payload.first as List<ClassSummary>
@@ -2509,6 +3184,7 @@ class _HomeScreenState extends State<HomeScreen> {
             remindersSource: remindersSource,
           );
           final classes = computed.classes;
+          final showRefreshingStrip = isRefreshing && hasStaleData;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _tryRevealPendingClassCard();
           });
@@ -2516,17 +3192,24 @@ class _HomeScreenState extends State<HomeScreen> {
           return ListView.separated(
             key: const PageStorageKey<String>('classes_list_view'),
             physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-            itemCount: classes.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 10),
+            padding: _pagePadding(responsive),
+            itemCount: classes.length + (showRefreshingStrip ? 1 : 0),
+            separatorBuilder: (_, __) => SizedBox(height: sectionGap),
             itemBuilder: (context, index) {
-              final cls = classes[index];
+              if (showRefreshingStrip && index == 0) {
+                return const _RefreshingStrip(
+                  message: 'Đang làm mới dữ liệu lớp học...',
+                );
+              }
+
+              final classIndex = showRefreshingStrip ? index - 1 : index;
+              final cls = classes[classIndex];
               final nextReminder = computed.nextReminderByClassId[cls.classId];
-              final roleLabel = nextReminder != null
-                  ? (nextReminder.roleShortName ??
-                      nextReminder.roleName ??
-                      'Chưa rõ vai trò')
-                  : 'Chưa rõ vai trò';
+              final roleLabel = nextReminder?.roleShortName ??
+                  nextReminder?.roleName ??
+                  cls.nextAttendanceWindow?.roleShortName ??
+                  cls.nextAttendanceWindow?.roleName ??
+                  'Chưa rõ vai trò';
               final participantBundle =
                   computed.participantsByClassId[cls.classId] ??
                       _buildParticipantsForClass(cls);
@@ -2611,13 +3294,30 @@ class _HomeScreenState extends State<HomeScreen> {
                   ? 'Còn ${_formatDurationMinutesVi(nextReminder?.minutesUntilWindowClose ?? cls.nextAttendanceWindow?.minutesUntilWindowClose ?? 0, compact: true)} để điểm danh'
                   : (nextClassStartTime != null &&
                           nextClassStartTime.trim().isNotEmpty
-                      ? 'Còn ${_formatDayHourMinuteCountdown(nextClassStartTime)} đến buổi học tiếp theo'
+                      ? 'Còn ${_formatDayHourMinuteCountdown(nextClassStartTime)} đến buổi tiếp'
                       : 'Chưa có buổi học tiếp theo');
 
-              return Card(
+              return Container(
                 key: _classCardKeyFor(cls.classId),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(20),
+                  border: const Border.fromBorderSide(
+                    BorderSide(color: Color(0xFFFDE4E4), width: 1.5),
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x0A000000),
+                      blurRadius: 20,
+                      offset: Offset(0, 8),
+                    ),
+                  ],
+                ),
                 child: Padding(
-                  padding: const EdgeInsets.all(14),
+                  padding: EdgeInsets.all(
+                    responsive.sectionGap(
+                        compact: 12, medium: 14, expanded: 16),
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -2625,12 +3325,18 @@ class _HomeScreenState extends State<HomeScreen> {
                         builder: (context, constraints) {
                           final titleWidget = Text(
                             cls.className,
-                            style: Theme.of(context).textTheme.titleMedium,
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(
+                                  color: const Color(0xFF8E1B1B),
+                                  fontWeight: FontWeight.w800,
+                                ),
                           );
                           final countdownWidget = _Pill(
                             label: countdownBadge,
-                            background: const Color(0xFFE3EEFF),
-                            foreground: const Color(0xFF154EA3),
+                            background: const Color(0xFFFFECEC),
+                            foreground: const Color(0xFFD32F2F),
                             icon: Icons.schedule_rounded,
                           );
 
@@ -2654,10 +3360,10 @@ class _HomeScreenState extends State<HomeScreen> {
                           );
                         },
                       ),
-                      const SizedBox(height: 10),
+                      SizedBox(height: sectionGap),
                       Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
+                        spacing: sectionGap,
+                        runSpacing: sectionGap,
                         children: [
                           _MiniStat(
                             icon: Icons.group_rounded,
@@ -2677,96 +3383,127 @@ class _HomeScreenState extends State<HomeScreen> {
                         ],
                       ),
                       if (cls.coTeachers.isNotEmpty) ...[
-                        const SizedBox(height: 8),
+                        SizedBox(height: sectionGap),
                         Text(
                           'Đồng giáo viên: ${cls.coTeachers.join(', ')}',
                           style:
                               Theme.of(context).textTheme.bodySmall?.copyWith(
-                                    color: Colors.blueGrey.shade700,
+                                    color: const Color(0xFF8E1B1B)
+                                        .withValues(alpha: 0.7),
                                     fontWeight: FontWeight.w700,
                                   ),
                         ),
                       ],
-                      const SizedBox(height: 12),
+                      SizedBox(height: sectionGap),
                       Container(
-                        padding: const EdgeInsets.all(4),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFFF3F6FC),
-                          borderRadius: BorderRadius.circular(12),
+                        padding: EdgeInsets.all(
+                          responsive.sectionGap(
+                            compact: 4,
+                            medium: 5,
+                            expanded: 6,
+                          ),
                         ),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: _ClassSectionButton(
-                                label: 'Chi tiết',
-                                icon: Icons.info_outline_rounded,
-                                selected: selectedSection ==
-                                    _ClassCardSection.details,
-                                onPressed: () {
-                                  _toggleClassSection(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFF8F8),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFFDE4E4)),
+                        ),
+                        child: LayoutBuilder(
+                          builder: (context, sectionConstraints) {
+                            final detailsButton = _ClassSectionButton(
+                              label: 'Chi tiết',
+                              icon: Icons.info_outline_rounded,
+                              selected:
+                                  selectedSection == _ClassCardSection.details,
+                              onPressed: () {
+                                _toggleClassSection(
+                                  classId: cls.classId,
+                                  section: _ClassCardSection.details,
+                                );
+                              },
+                            );
+                            final attendanceButton = _ClassSectionButton(
+                              label: 'Điểm danh',
+                              icon: Icons.fact_check_outlined,
+                              selected: selectedSection ==
+                                  _ClassCardSection.attendance,
+                              onPressed: () {
+                                _toggleClassSection(
+                                  classId: cls.classId,
+                                  section: _ClassCardSection.attendance,
+                                );
+                              },
+                            );
+                            final commentButton = _ClassSectionButton(
+                              label: 'Nhận xét',
+                              icon: Icons.edit_note_rounded,
+                              selected:
+                                  selectedSection == _ClassCardSection.note,
+                              onPressed: () {
+                                final isActive =
+                                    selectedSection == _ClassCardSection.note;
+                                _toggleClassSection(
+                                  classId: cls.classId,
+                                  section: _ClassCardSection.note,
+                                );
+                                if (!isActive) {
+                                  final previousSlotId =
+                                      cls.previousCommentContext?.slotId ?? '';
+                                  _loadStudentCommentsForClass(
                                     classId: cls.classId,
-                                    section: _ClassCardSection.details,
+                                    slotId: saveSlotId,
+                                    studentNames: studentNames,
                                   );
-                                },
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: _ClassSectionButton(
-                                label: 'Điểm danh',
-                                icon: Icons.fact_check_outlined,
-                                selected: selectedSection ==
-                                    _ClassCardSection.attendance,
-                                onPressed: () {
-                                  _toggleClassSection(
+                                  _loadPreviousStudentCommentsForClass(
                                     classId: cls.classId,
-                                    section: _ClassCardSection.attendance,
+                                    slotId: previousSlotId,
                                   );
-                                },
-                              ),
-                            ),
-                            const SizedBox(width: 6),
-                            Expanded(
-                              child: _ClassSectionButton(
-                                label: 'Nhận xét',
-                                icon: Icons.edit_note_rounded,
-                                selected:
-                                    selectedSection == _ClassCardSection.note,
-                                onPressed: () {
-                                  final isActive =
-                                      selectedSection == _ClassCardSection.note;
-                                  _toggleClassSection(
-                                    classId: cls.classId,
-                                    section: _ClassCardSection.note,
-                                  );
-                                  if (!isActive) {
-                                    final previousSlotId =
-                                        cls.previousCommentContext?.slotId ??
-                                            '';
-                                    _loadStudentCommentsForClass(
-                                      classId: cls.classId,
-                                      slotId: saveSlotId,
-                                      studentNames: studentNames,
-                                    );
-                                    _loadPreviousStudentCommentsForClass(
-                                      classId: cls.classId,
-                                      slotId: previousSlotId,
-                                    );
-                                  }
-                                },
-                              ),
-                            ),
-                          ],
+                                }
+                              },
+                            );
+
+                            if (sectionConstraints.maxWidth < 420) {
+                              return Column(
+                                children: [
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: detailsButton,
+                                  ),
+                                  SizedBox(height: sectionGap),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: attendanceButton,
+                                  ),
+                                  SizedBox(height: sectionGap),
+                                  SizedBox(
+                                    width: double.infinity,
+                                    child: commentButton,
+                                  ),
+                                ],
+                              );
+                            }
+
+                            return Row(
+                              children: [
+                                Expanded(child: detailsButton),
+                                SizedBox(width: sectionGap),
+                                Expanded(child: attendanceButton),
+                                SizedBox(width: sectionGap),
+                                Expanded(child: commentButton),
+                              ],
+                            );
+                          },
                         ),
                       ),
-                      if (selectedSection != null) const SizedBox(height: 10),
+                      if (selectedSection != null) SizedBox(height: sectionGap),
                       if (selectedSection == _ClassCardSection.details) ...[
                         Container(
                           width: double.infinity,
-                          padding: const EdgeInsets.all(10),
+                          padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: const Color(0xFFF3F7FF),
+                            color: const Color(0xFFFFF4F4),
                             borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFFDE4E4)),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2777,7 +3514,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                     .textTheme
                                     .titleSmall
                                     ?.copyWith(
-                                      color: const Color(0xFF1C4ED8),
+                                      color: const Color(0xFFD32F2F),
                                       fontWeight: FontWeight.w800,
                                     ),
                               ),
@@ -2813,7 +3550,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         Container(
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.blueGrey.shade100),
+                            border: Border.all(color: const Color(0xFFFDE4E4)),
+                            color: Colors.white,
                           ),
                           padding: const EdgeInsets.fromLTRB(12, 12, 12, 10),
                           child: Column(
@@ -2844,8 +3582,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                     margin: const EdgeInsets.only(bottom: 8),
                                     padding: const EdgeInsets.all(10),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFFF8FAFF),
+                                      color: const Color(0xFFFFF8F8),
                                       borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                          color: const Color(0xFFFDE4E4)),
                                     ),
                                     child: Column(
                                       crossAxisAlignment:
@@ -2866,12 +3606,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                               ),
                                             ),
                                             if (participant.isCoTeacher)
-                                              _Pill(
+                                              const _Pill(
                                                 label: 'Đồng GV',
-                                                background:
-                                                    const Color(0xFFE3EEFF),
-                                                foreground:
-                                                    const Color(0xFF1C4ED8),
+                                                background: Color(0xFFFFECEC),
+                                                foreground: Color(0xFFD32F2F),
                                                 icon: Icons.groups_rounded,
                                               ),
                                           ],
@@ -2908,8 +3646,8 @@ class _HomeScreenState extends State<HomeScreen> {
                                                         ? _attendanceStatusColor(
                                                             option,
                                                           )
-                                                        : Colors
-                                                            .blueGrey.shade200,
+                                                        : const Color(
+                                                            0xFFFDE4E4),
                                                   ),
                                                   onSelected: (selected) {
                                                     _setAttendanceStatus(
@@ -2930,313 +3668,124 @@ class _HomeScreenState extends State<HomeScreen> {
                                     ),
                                   );
                                 }),
-                                const SizedBox(height: 4),
-                                SizedBox(
-                                  width: double.infinity,
-                                  child: FilledButton.icon(
-                                    onPressed: participants.isEmpty ||
-                                            isSavingAttendance
+                              ],
+                              const SizedBox(height: 4),
+                              _buildSweepButton(
+                                label: isSavingAttendance
+                                    ? 'Đang lưu điểm danh...'
+                                    : 'Lưu kết quả điểm danh',
+                                icon: Icons.save_rounded,
+                                isLoading: isSavingAttendance,
+                                onPressed:
+                                    participants.isEmpty || isSavingAttendance
                                         ? null
                                         : () => _saveAttendanceForClass(
                                               classId: cls.classId,
                                               slotId: saveSlotId,
                                               participants: participants,
                                             ),
-                                    icon: isSavingAttendance
-                                        ? const SizedBox(
-                                            width: 18,
-                                            height: 18,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                            ),
-                                          )
-                                        : const Icon(Icons.save_rounded),
-                                    label: Text(
-                                      isSavingAttendance
-                                          ? 'Đang lưu điểm danh...'
-                                          : 'Lưu kết quả điểm danh',
-                                    ),
-                                  ),
+                              ),
+                              if (savedAt != null) ...[
+                                const SizedBox(height: 6),
+                                Text(
+                                  'Đã lưu lúc ${DateFormat('HH:mm:ss - dd/MM/yyyy').format(savedAt)}'
+                                  '${isDirty ? ' · Có thay đổi chưa lưu' : ''}',
+                                  style: Theme.of(context)
+                                      .textTheme
+                                      .bodySmall
+                                      ?.copyWith(
+                                        color: isDirty
+                                            ? Colors.orange.shade800
+                                            : Colors.green.shade700,
+                                        fontWeight: FontWeight.w700,
+                                      ),
                                 ),
-                                if (savedAt != null) ...[
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    'Đã lưu lúc ${DateFormat('HH:mm:ss - dd/MM/yyyy').format(savedAt)}'
-                                    '${isDirty ? ' · Có thay đổi chưa lưu' : ''}',
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(
-                                          color: isDirty
-                                              ? Colors.orange.shade800
-                                              : Colors.green.shade700,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                  ),
-                                ],
                               ],
                             ],
                           ),
                         ),
                       ] else if (selectedSection == _ClassCardSection.note) ...[
+                        // Comment summary card -> taps open the full comment sheet
                         Container(
                           width: double.infinity,
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
-                            color: const Color(0xFFF7F8FB),
+                            color: const Color(0xFFFFF8F8),
                             borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.blueGrey.shade100),
+                            border: Border.all(color: const Color(0xFFFDE4E4)),
                           ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                previousCommentHeader,
-                                style: Theme.of(context).textTheme.titleSmall,
-                              ),
-                              const SizedBox(height: 8),
-                              if (previousSlotId.isEmpty)
-                                const _EmptyLabel(
-                                  message:
-                                      'Chưa có dữ liệu tuần trước để kiểm tra nhận xét.',
-                                )
-                              else if (isLoadingPreviousComments)
-                                const _InlineLoading()
-                              else if (previousCommentsError != null)
-                                _ErrorLabel(message: previousCommentsError)
-                              else if (previousCommentDrafts.isEmpty)
-                                const _EmptyLabel(
-                                  message:
-                                      'Tuần trước tất cả học viên đã có nhận xét.',
-                                )
-                              else ...[
-                                if (previousMissingMessage.isNotEmpty)
-                                  Container(
-                                    width: double.infinity,
-                                    margin: const EdgeInsets.only(bottom: 10),
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFFFF4E5),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                          color: const Color(0xFFF5D0A9)),
-                                    ),
-                                    child: Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        const Padding(
-                                          padding: EdgeInsets.only(top: 1),
-                                          child: Icon(
-                                            Icons.warning_amber_rounded,
-                                            color: Color(0xFFB45309),
-                                            size: 18,
-                                          ),
-                                        ),
-                                        const SizedBox(width: 6),
-                                        Expanded(
-                                          child: Text(
-                                            previousMissingMessage,
-                                            style: Theme.of(context)
-                                                .textTheme
-                                                .bodySmall
-                                                ?.copyWith(
-                                                  color:
-                                                      const Color(0xFF92400E),
-                                                  fontWeight: FontWeight.w700,
-                                                ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
+                              // Previous week summary badge
+                              if (previousMissingCount > 0)
+                                Container(
+                                  width: double.infinity,
+                                  margin: const EdgeInsets.only(bottom: 10),
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFFFF4E5),
+                                    borderRadius: BorderRadius.circular(10),
+                                    border: Border.all(
+                                        color: const Color(0xFFF5D0A9)),
                                   ),
-                                ...previousCommentDrafts.map((item) {
-                                  return Container(
-                                    margin: const EdgeInsets.only(bottom: 10),
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFFFFBEB),
-                                      borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(
-                                        color: const Color(0xFFF3D9AA),
+                                  child: Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Padding(
+                                        padding: EdgeInsets.only(top: 1),
+                                        child: Icon(
+                                          Icons.warning_amber_rounded,
+                                          color: Color(0xFFB45309),
+                                          size: 16,
+                                        ),
                                       ),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          item.name,
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          '$previousMissingCount học viên chưa nhận xét tuần trước.',
                                           style: Theme.of(context)
                                               .textTheme
-                                              .bodyMedium
+                                              .bodySmall
                                               ?.copyWith(
+                                                color: const Color(0xFF92400E),
                                                 fontWeight: FontWeight.w700,
                                               ),
                                         ),
-                                        const SizedBox(height: 4),
-                                        TextFormField(
-                                          key: ValueKey<String>(
-                                            'previous_comment_${cls.classId}_${item.key}_$previousSlotId',
-                                          ),
-                                          initialValue: item.comment,
-                                          minLines: 2,
-                                          maxLines: 4,
-                                          decoration: const InputDecoration(
-                                            hintText:
-                                                'Nhập nhận xét cho học viên tuần trước',
-                                          ),
-                                          onChanged: (value) {
-                                            _updatePreviousStudentCommentDraft(
-                                              classId: cls.classId,
-                                              key: item.key,
-                                              comment: value,
-                                            );
-                                          },
-                                        ),
-                                        const SizedBox(height: 8),
-                                        SizedBox(
-                                          width: double.infinity,
-                                          child: FilledButton.icon(
-                                            onPressed: isSavingPreviousComments
-                                                ? null
-                                                : () =>
-                                                    _savePreviousWeekStudentCommentForClass(
-                                                      classId: cls.classId,
-                                                      slotId: previousSlotId,
-                                                      draft: item,
-                                                    ),
-                                            icon: isSavingPreviousComments &&
-                                                    savingPreviousDraftKey ==
-                                                        item.key
-                                                ? const SizedBox(
-                                                    width: 18,
-                                                    height: 18,
-                                                    child:
-                                                        CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                    ),
-                                                  )
-                                                : const Icon(
-                                                    Icons.save_rounded,
-                                                  ),
-                                            label: Text(
-                                              isSavingPreviousComments &&
-                                                      savingPreviousDraftKey ==
-                                                          item.key
-                                                  ? 'Đang lưu...'
-                                                  : 'Lưu nhận xét tuần trước',
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }),
-                              ],
-                              const SizedBox(height: 10),
-                              const Divider(height: 1),
-                              const SizedBox(height: 10),
-                              Text(
-                                'Nhận xét từng học viên',
-                                style: Theme.of(context).textTheme.titleSmall,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              _buildSweepButton(
+                                label: 'Mở bảng nhận xét học viên',
+                                icon: Icons.edit_note_rounded,
+                                isLoading: isLoadingComments ||
+                                    isLoadingPreviousComments,
+                                onPressed: () => _showCommentBottomSheet(
+                                  context: context,
+                                  cls: cls,
+                                  saveSlotId: saveSlotId,
+                                  previousSlotId: previousSlotId,
+                                  studentNames: studentNames,
+                                  commentDrafts: commentDrafts,
+                                  previousCommentDrafts: previousCommentDrafts,
+                                  previousCommentHeader: previousCommentHeader,
+                                  previousMissingMessage:
+                                      previousMissingMessage,
+                                  isLoadingComments: isLoadingComments,
+                                  isLoadingPreviousComments:
+                                      isLoadingPreviousComments,
+                                  commentsError: commentsError,
+                                  previousCommentsError: previousCommentsError,
+                                  isSavingComments: isSavingComments,
+                                  isSavingPreviousComments:
+                                      isSavingPreviousComments,
+                                  savingDraftKey: savingDraftKey,
+                                  savingPreviousDraftKey:
+                                      savingPreviousDraftKey,
+                                ),
                               ),
-                              const SizedBox(height: 8),
-                              if (saveSlotId.isEmpty)
-                                const _EmptyLabel(
-                                  message: 'Chưa có slot sắp tới để nhận xét.',
-                                )
-                              else if (isLoadingComments)
-                                const _InlineLoading()
-                              else if (commentsError != null)
-                                _ErrorLabel(message: commentsError)
-                              else if (commentDrafts.isEmpty)
-                                const _EmptyLabel(
-                                  message:
-                                      'Chưa có học viên để nhận xét cho slot này.',
-                                )
-                              else ...[
-                                ...commentDrafts.map((item) {
-                                  return Container(
-                                    margin: const EdgeInsets.only(bottom: 10),
-                                    padding: const EdgeInsets.all(10),
-                                    decoration: BoxDecoration(
-                                      color: const Color(0xFFF8FAFF),
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          item.name,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodyMedium
-                                              ?.copyWith(
-                                                fontWeight: FontWeight.w700,
-                                              ),
-                                        ),
-                                        const SizedBox(height: 6),
-                                        TextFormField(
-                                          key: ValueKey<String>(
-                                            'comment_${cls.classId}_${item.key}_$saveSlotId',
-                                          ),
-                                          initialValue: item.comment,
-                                          minLines: 2,
-                                          maxLines: 4,
-                                          decoration: const InputDecoration(
-                                            hintText:
-                                                'Nhập nhận xét cho học viên này',
-                                          ),
-                                          onChanged: (value) {
-                                            _updateStudentCommentDraft(
-                                              classId: cls.classId,
-                                              key: item.key,
-                                              comment: value,
-                                            );
-                                          },
-                                        ),
-                                        const SizedBox(height: 8),
-                                        SizedBox(
-                                          width: double.infinity,
-                                          child: FilledButton.icon(
-                                            onPressed: isSavingComments
-                                                ? null
-                                                : () =>
-                                                    _saveSingleStudentCommentForClass(
-                                                      classId: cls.classId,
-                                                      slotId: saveSlotId,
-                                                      draft: item,
-                                                      studentNames:
-                                                          studentNames,
-                                                    ),
-                                            icon: isSavingComments &&
-                                                    savingDraftKey == item.key
-                                                ? const SizedBox(
-                                                    width: 18,
-                                                    height: 18,
-                                                    child:
-                                                        CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                    ),
-                                                  )
-                                                : const Icon(
-                                                    Icons.save_rounded,
-                                                  ),
-                                            label: Text(
-                                              isSavingComments &&
-                                                      savingDraftKey == item.key
-                                                  ? 'Đang lưu...'
-                                                  : 'Lưu nhận xét học viên này',
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }),
-                              ],
                             ],
                           ),
                         ),
@@ -3253,6 +3802,17 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildPayrollPage() {
+    final responsive = AppResponsive.of(context);
+    final sectionGap = responsive.sectionGap(
+      compact: 10,
+      medium: 12,
+      expanded: 14,
+    );
+    final wrapGap = responsive.sectionGap(
+      compact: 8,
+      medium: 10,
+      expanded: 12,
+    );
     final monthOptions = List<int>.generate(12, (index) => index + 1);
     final yearOptions = {
       ..._availablePayrollYears(),
@@ -3261,17 +3821,31 @@ class _HomeScreenState extends State<HomeScreen> {
       ..sort();
 
     return RefreshIndicator(
+      color: const Color(0xFFD32F2F),
       onRefresh: () => _showPullActionsSheet(tabIndex: 2),
       child: FutureBuilder<PayrollResponse>(
         future: _payrollFuture,
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snapshot.hasError) {
+          final stalePayroll = _stalePayrollForPeriod();
+          final isRefreshing =
+              snapshot.connectionState == ConnectionState.waiting;
+          final payroll = snapshot.data ?? stalePayroll;
+          if (snapshot.hasError && payroll == null) {
             return _ErrorView(message: snapshot.error.toString());
           }
-          final payroll = snapshot.data;
+          if (isRefreshing && payroll == null) {
+            return ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: _pagePadding(responsive),
+              children: const [
+                _PayrollPageSkeletonCard(),
+                SizedBox(height: 10),
+                _PayrollPageSkeletonCard(lines: 6),
+                SizedBox(height: 10),
+                _PayrollPageSkeletonCard(lines: 8),
+              ],
+            );
+          }
           if (payroll == null) {
             return const _EmptyView(message: 'Không có dữ liệu thu nhập.');
           }
@@ -3284,11 +3858,33 @@ class _HomeScreenState extends State<HomeScreen> {
             manualAdjustment,
           );
 
+          final inputDecoration = InputDecoration(
+            filled: true,
+            fillColor: const Color(0xFFFFF8F8),
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFFFDE4E4)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(color: Color(0xFFD32F2F), width: 2),
+            ),
+          );
+
           return ListView(
             key: const PageStorageKey<String>('payroll_list_view'),
             physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            padding: _pagePadding(responsive),
             children: [
+              if (isRefreshing)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 10),
+                  child: _RefreshingStrip(
+                    message: 'Đang làm mới dữ liệu thu nhập...',
+                  ),
+                ),
               _SectionCard(
                 title: 'Bộ lọc kỳ lương',
                 child: Column(
@@ -3296,12 +3892,14 @@ class _HomeScreenState extends State<HomeScreen> {
                     _buildResponsiveFieldPair(
                       first: DropdownButtonFormField<int>(
                         initialValue: _selectedPayrollMonth,
-                        decoration: const InputDecoration(labelText: 'Thang'),
+                        decoration:
+                            inputDecoration.copyWith(labelText: 'Tháng'),
+                        dropdownColor: Colors.white,
                         items: monthOptions
                             .map(
                               (month) => DropdownMenuItem<int>(
                                 value: month,
-                                child: Text('Thang $month'),
+                                child: Text('Tháng $month'),
                               ),
                             )
                             .toList(),
@@ -3314,7 +3912,8 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
                       second: DropdownButtonFormField<int>(
                         initialValue: _selectedPayrollYear,
-                        decoration: const InputDecoration(labelText: 'Nam'),
+                        decoration: inputDecoration.copyWith(labelText: 'Năm'),
+                        dropdownColor: Colors.white,
                         items: yearOptions
                             .map(
                               (year) => DropdownMenuItem<int>(
@@ -3331,14 +3930,14 @@ class _HomeScreenState extends State<HomeScreen> {
                         },
                       ),
                     ),
-                    const SizedBox(height: 10),
+                    SizedBox(height: sectionGap),
                     _buildResponsiveFieldPair(
                       first: TextField(
                         controller: _hourlyRateController,
                         keyboardType: TextInputType.number,
-                        decoration: const InputDecoration(
-                          labelText: 'Luong theo gio (VND)',
-                          hintText: 'Vi du: 150000',
+                        decoration: inputDecoration.copyWith(
+                          labelText: 'Lương theo giờ (VND)',
+                          hintText: 'Ví dụ: 150000',
                         ),
                         onChanged: (_) => _onPayrollInputChanged(),
                       ),
@@ -3347,9 +3946,9 @@ class _HomeScreenState extends State<HomeScreen> {
                         keyboardType: const TextInputType.numberWithOptions(
                           signed: true,
                         ),
-                        decoration: const InputDecoration(
-                          labelText: 'Cong bu / dieu chinh',
-                          hintText: 'Vi du: 300000 hoac -200000',
+                        decoration: inputDecoration.copyWith(
+                          labelText: 'Công bù / điều chỉnh',
+                          hintText: 'Ví dụ: 300000 hoặc -200000',
                         ),
                         onChanged: (_) => _onPayrollInputChanged(),
                       ),
@@ -3357,7 +3956,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   ],
                 ),
               ),
-              const SizedBox(height: 12),
+              SizedBox(height: sectionGap),
               _SectionCard(
                 title: 'Tổng hợp thu nhập ${payroll.month}/${payroll.year}',
                 subtitle: 'Đã tính role + office hour + công bù thủ công',
@@ -3365,8 +3964,8 @@ class _HomeScreenState extends State<HomeScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
+                      spacing: wrapGap,
+                      runSpacing: wrapGap,
                       children: [
                         _MiniStat(
                           icon: Icons.check_circle_rounded,
@@ -3380,7 +3979,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ],
                     ),
-                    const SizedBox(height: 10),
+                    SizedBox(height: sectionGap),
                     Text(
                       'Thu nhập lớp học: ${_formatMoney(moneySummary.classIncome)}',
                       style: TextStyle(
@@ -3390,6 +3989,12 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                     Text(
                       'Thu nhập office hour: ${_formatMoney(moneySummary.officeHourIncome)}',
+                      style: TextStyle(
+                        color: moneySummary.manualAdjustment < 0
+                            ? Colors.red.shade700
+                            : Colors.green.shade700,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     Text(
                       'Công bù / điều chỉnh: ${_formatMoney(moneySummary.manualAdjustment)}',
@@ -3405,12 +4010,14 @@ class _HomeScreenState extends State<HomeScreen> {
                       'Tổng hiện tại: ${_formatMoney(moneySummary.actualIncome)}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             color: Colors.green.shade700,
+                            fontWeight: FontWeight.w800,
                           ),
                     ),
                     Text(
                       'Tổng dự kiến cuối tháng: ${_formatMoney(moneySummary.projectedIncome)}',
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                            color: const Color(0xFF1C4ED8),
+                            color: const Color(0xFFD32F2F),
+                            fontWeight: FontWeight.w800,
                           ),
                     ),
                     const SizedBox(height: 6),
@@ -3419,21 +4026,25 @@ class _HomeScreenState extends State<HomeScreen> {
                       '(Fixed ${moneySummary.fixedOfficeHourCount}, '
                       'Trial ${moneySummary.trialOfficeHourCount}, '
                       'Makeup ${moneySummary.makeupOfficeHourCount})',
+                      style: TextStyle(color: Colors.grey.shade700),
                     ),
                   ],
                 ),
               ),
-              const SizedBox(height: 12),
+              SizedBox(height: sectionGap),
               _SectionCard(
-                title: 'Theo role',
+                title: 'Theo vai trò',
                 child: Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
+                  spacing: wrapGap,
+                  runSpacing: wrapGap,
                   children: payroll.summary.byRole
                       .map(
                         (role) => Chip(
+                          backgroundColor: const Color(0xFFFFF4F4),
+                          side: const BorderSide(color: Color(0xFFFDE4E4)),
                           label: Text(
                             '${role.role}: ${role.slotCount} slots · ${role.totalHours}h',
+                            style: const TextStyle(color: Color(0xFF8E1B1B)),
                           ),
                         ),
                       )
@@ -3441,7 +4052,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ),
               if (payroll.officeHours.isNotEmpty) ...[
-                const SizedBox(height: 12),
+                SizedBox(height: sectionGap),
                 _SectionCard(
                   title: 'Chi tiết office hour',
                   child: Column(
@@ -3453,7 +4064,8 @@ class _HomeScreenState extends State<HomeScreen> {
                         margin: const EdgeInsets.only(bottom: 10),
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.blueGrey.shade100),
+                          border: Border.all(color: const Color(0xFFFDE4E4)),
+                          color: Colors.white,
                         ),
                         child: ListTile(
                           title: Text('$typeLabel · ${officeHour.status}'),
@@ -3488,7 +4100,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ],
               if (payroll.classes.isNotEmpty) ...[
-                const SizedBox(height: 12),
+                SizedBox(height: sectionGap),
                 _SectionCard(
                   title: 'Chi tiết theo lớp',
                   child: Column(
@@ -3499,17 +4111,22 @@ class _HomeScreenState extends State<HomeScreen> {
                         margin: const EdgeInsets.only(bottom: 10),
                         decoration: BoxDecoration(
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: Colors.blueGrey.shade100),
+                          border: Border.all(color: const Color(0xFFFDE4E4)),
+                          color: Colors.white,
                         ),
                         child: ExpansionTile(
                           key: PageStorageKey<String>(
                             'payroll_class_tile_${cls.classId}',
                           ),
+                          iconColor: const Color(0xFFD32F2F),
+                          collapsedIconColor: const Color(0xFF8E1B1B),
                           tilePadding:
                               const EdgeInsets.symmetric(horizontal: 12),
                           childrenPadding:
                               const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                          title: Text(cls.className),
+                          title: Text(cls.className,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w600)),
                           subtitle: Text(
                             '${cls.taughtSlotCount} slots · ${cls.totalHours}h',
                           ),
@@ -3571,510 +4188,271 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final titles = ['Tổng quan', 'Lớp học', 'Thu nhập'];
-    final safeIndex = _selectedIndex.clamp(0, titles.length - 1);
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(titles[safeIndex]),
-      ),
-      body: PageView.builder(
-        controller: _pageController,
-        onPageChanged: _onTabPageChanged,
-        itemCount: titles.length,
-        itemBuilder: (context, index) {
-          return RepaintBoundary(
-            key: PageStorageKey<String>('home_tab_page_$index'),
-            child: _buildTabPage(index),
-          );
-        },
-      ),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border(
-            top: BorderSide(color: Colors.blueGrey.shade100),
-          ),
-        ),
-        child: NavigationBar(
-          selectedIndex: safeIndex,
-          onDestinationSelected: _onDestinationSelected,
-          destinations: const [
-            NavigationDestination(
-              icon: Icon(Icons.dashboard_outlined),
-              selectedIcon: Icon(Icons.dashboard_rounded),
-              label: 'Tổng quan',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.class_outlined),
-              selectedIcon: Icon(Icons.class_rounded),
-              label: 'Lớp học',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.account_balance_wallet_outlined),
-              selectedIcon: Icon(Icons.account_balance_wallet_rounded),
-              label: 'Thu nhập',
-            ),
-          ],
-        ),
-      ),
+  Widget _buildFixedBottomTabItem({
+    required bool selected,
+    required IconData icon,
+    required IconData selectedIcon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    final color = selected ? const Color(0xFFD32F2F) : Colors.blueGrey.shade600;
+    final textStyle = TextStyle(
+      color: color,
+      fontSize: 11,
+      fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
     );
-  }
-}
 
-class _SectionCard extends StatelessWidget {
-  final String title;
-  final String? subtitle;
-  final Widget child;
-
-  const _SectionCard({
-    required this.title,
-    required this.child,
-    this.subtitle,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final accents = Theme.of(context).extension<AppAccentColors>()!;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                    color: accents.ink,
-                  ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(18),
+        child: Center(
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: selected ? const Color(0xFFFFECEC) : Colors.transparent,
+              borderRadius: BorderRadius.circular(16),
             ),
-            if (subtitle != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                subtitle!,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: accents.mutedInk,
-                    ),
-              ),
-            ],
-            const SizedBox(height: 10),
-            child,
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _KpiTile extends StatelessWidget {
-  final String label;
-  final String value;
-  final String hint;
-  final IconData icon;
-  final bool wide;
-  final bool loading;
-
-  const _KpiTile({
-    required this.label,
-    required this.value,
-    required this.hint,
-    required this.icon,
-    this.wide = false,
-  }) : loading = false;
-
-  const _KpiTile.loading({
-    required this.label,
-  })  : value = '...',
-        hint = 'Đang tải',
-        icon = Icons.hourglass_top_rounded,
-        wide = false,
-        loading = true;
-
-  @override
-  Widget build(BuildContext context) {
-    final constraints = wide
-        ? const BoxConstraints(
-            minWidth: 180,
-            maxWidth: 420,
-            minHeight: 116,
-          )
-        : const BoxConstraints(
-            minWidth: 130,
-            maxWidth: 260,
-            minHeight: 116,
-          );
-
-    return ConstrainedBox(
-      constraints: constraints,
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(14),
-          color: const Color(0xFFF5F8FF),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, size: 18, color: const Color(0xFF1C4ED8)),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          fontWeight: FontWeight.w700,
-                        ),
-                  ),
+                Icon(
+                  selected ? selectedIcon : icon,
+                  color: color,
+                  size: 22,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textStyle,
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            if (loading)
-              const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            else
-              Text(
-                value,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-              ),
-            const SizedBox(height: 4),
-            Text(
-              hint,
-              style: Theme.of(context).textTheme.bodySmall,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _MiniStat extends StatelessWidget {
-  final IconData icon;
-  final String label;
-
-  const _MiniStat({
-    required this.icon,
-    required this.label,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(10),
-        color: const Color(0xFFF5F8FF),
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 260),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 15, color: const Color(0xFF2958C7)),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                    ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _Pill extends StatelessWidget {
-  final String label;
-  final Color background;
-  final Color foreground;
-  final IconData? icon;
-
-  const _Pill({
-    required this.label,
-    required this.background,
-    required this.foreground,
-    this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-      decoration: BoxDecoration(
-        color: background,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 220),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (icon != null) ...[
-              Icon(icon, size: 12, color: foreground),
-              const SizedBox(width: 4),
-            ],
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: foreground,
-                      fontWeight: FontWeight.w800,
-                    ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ClassSectionButton extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onPressed;
-
-  const _ClassSectionButton({
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onPressed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return FilledButton.icon(
-      onPressed: onPressed,
-      style: FilledButton.styleFrom(
-        elevation: 0,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(10),
-        ),
-        backgroundColor:
-            selected ? const Color(0xFFE3EEFF) : const Color(0xFFF9FBFF),
-        foregroundColor:
-            selected ? const Color(0xFF1C4ED8) : Colors.blueGrey.shade700,
-      ),
-      icon: Icon(icon, size: 16),
-      label: Text(
-        label,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
-    );
-  }
-}
-
-class _PullActionButton extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final String subtitle;
-  final Color accent;
-  final VoidCallback onPressed;
-
-  const _PullActionButton({
-    required this.icon,
-    required this.title,
-    required this.subtitle,
-    required this.accent,
-    required this.onPressed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.white.withValues(alpha: 0.1),
-      borderRadius: BorderRadius.circular(16),
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(16),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-          child: Row(
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: accent.withValues(alpha: 0.22),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(icon, size: 18, color: Colors.white),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w800,
-                          ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Colors.white.withValues(alpha: 0.82),
-                            fontWeight: FontWeight.w600,
-                          ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
           ),
         ),
       ),
     );
   }
-}
-
-class _InlineLoading extends StatelessWidget {
-  const _InlineLoading();
 
   @override
   Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.symmetric(vertical: 16),
-      child: Center(
-        child: SizedBox(
-          width: 20,
-          height: 20,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      ),
+    final responsive = AppResponsive.of(context);
+    final safeIndex = _selectedIndex.clamp(0, 2);
+    final useNavigationRail = responsive.isExpanded;
+    final pageView = PageView.builder(
+      controller: _pageController,
+      onPageChanged: _onTabPageChanged,
+      itemCount: 3,
+      itemBuilder: (context, index) {
+        return RepaintBoundary(
+          key: PageStorageKey<String>('home_tab_page_$index'),
+          child: _buildTabPage(index),
+        );
+      },
     );
-  }
-}
 
-class _ErrorLabel extends StatelessWidget {
-  final String message;
-
-  const _ErrorLabel({required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.red.shade50,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.red.shade100),
-      ),
-      child: Text(
-        message,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Colors.red.shade700,
-              fontWeight: FontWeight.w700,
-            ),
-      ),
-    );
-  }
-}
-
-class _EmptyLabel extends StatelessWidget {
-  final String message;
-
-  const _EmptyLabel({required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7F8FB),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(
-        message,
-        style: Theme.of(context).textTheme.bodySmall,
-      ),
-    );
-  }
-}
-
-class _ErrorView extends StatelessWidget {
-  final String message;
-  const _ErrorView({required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Text(
-          message,
-          style: const TextStyle(color: Colors.red),
-          textAlign: TextAlign.center,
-        ),
-      ),
-    );
-  }
-}
-
-class _EmptyView extends StatelessWidget {
-  final String message;
-  const _EmptyView({required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    final accents = Theme.of(context).extension<AppAccentColors>()!;
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+    return Scaffold(
+      extendBody: true, // Quan trọng: Cho list lướt qua dưới taskbar
+      backgroundColor: const Color(0xFFFCF9F9),
+      appBar: AppBar(
+        centerTitle: false,
+        title: Row(
           children: [
-            Icon(
-              Icons.inbox_rounded,
-              size: 40,
-              color: accents.mutedInk.withValues(alpha: 0.8),
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFFD32F2F), Color(0xFFF59E0B)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.school_rounded,
+                  color: Colors.white, size: 20),
             ),
-            const SizedBox(height: 8),
-            Text(
-              message,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: accents.mutedInk,
-                  ),
-              textAlign: TextAlign.center,
+            const SizedBox(width: 10),
+            ShaderMask(
+              shaderCallback: (bounds) => const LinearGradient(
+                colors: [Color(0xFFD32F2F), Color(0xFF8E1B1B)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ).createShader(bounds),
+              child: const Text(
+                'Smooth',
+                style: TextStyle(
+                  fontWeight: FontWeight.w900,
+                  fontSize: 24,
+                  letterSpacing: -0.5,
+                  color: Colors.white,
+                ),
+              ),
             ),
           ],
         ),
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        scrolledUnderElevation: 0,
+        elevation: 0,
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Container(color: const Color(0xFFFDE4E4), height: 1),
+        ),
       ),
+      body: useNavigationRail
+          ? Row(
+              children: [
+                Container(
+                  width: 94,
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    border: Border(
+                      right: BorderSide(color: Color(0xFFFDE4E4)),
+                    ),
+                  ),
+                  child: SafeArea(
+                    child: NavigationRail(
+                      backgroundColor: Colors.white,
+                      selectedIndex: safeIndex,
+                      onDestinationSelected: _onDestinationSelected,
+                      labelType: NavigationRailLabelType.all,
+                      groupAlignment: -0.75,
+                      selectedIconTheme:
+                          const IconThemeData(color: Color(0xFFD32F2F)),
+                      selectedLabelTextStyle: const TextStyle(
+                          color: Color(0xFFD32F2F),
+                          fontWeight: FontWeight.bold),
+                      indicatorColor: const Color(0xFFFFECEC),
+                      destinations: const [
+                        NavigationRailDestination(
+                          icon: Icon(Icons.dashboard_outlined),
+                          selectedIcon: Icon(Icons.dashboard_rounded),
+                          label: Text('Tổng quan'),
+                        ),
+                        NavigationRailDestination(
+                          icon: Icon(Icons.class_outlined),
+                          selectedIcon: Icon(Icons.class_rounded),
+                          label: Text('Lớp học'),
+                        ),
+                        NavigationRailDestination(
+                          icon: Icon(Icons.account_balance_wallet_outlined),
+                          selectedIcon:
+                              Icon(Icons.account_balance_wallet_rounded),
+                          label: Text('Thu nhập'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                Expanded(child: pageView),
+              ],
+            )
+          : pageView,
+      bottomNavigationBar: useNavigationRail
+          ? null
+          : Padding(
+              padding: EdgeInsets.only(
+                left: 16,
+                right: 16,
+                bottom: 12,
+              ),
+              child: Container(
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(30),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.08),
+                      blurRadius: 24,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(30),
+                  child: Stack(
+                    children: [
+                      SizedBox(
+                        height: 68,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: _buildFixedBottomTabItem(
+                                selected: safeIndex == 0,
+                                icon: Icons.dashboard_outlined,
+                                selectedIcon: Icons.dashboard_rounded,
+                                label: 'Tổng quan',
+                                onTap: () => _onDestinationSelected(0),
+                              ),
+                            ),
+                            Expanded(
+                              child: _buildFixedBottomTabItem(
+                                selected: safeIndex == 1,
+                                icon: Icons.class_outlined,
+                                selectedIcon: Icons.class_rounded,
+                                label: 'Lớp học',
+                                onTap: () => _onDestinationSelected(1),
+                              ),
+                            ),
+                            Expanded(
+                              child: _buildFixedBottomTabItem(
+                                selected: safeIndex == 2,
+                                icon: Icons.account_balance_wallet_outlined,
+                                selectedIcon:
+                                    Icons.account_balance_wallet_rounded,
+                                label: 'Thu nhập',
+                                onTap: () => _onDestinationSelected(2),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: AnimatedBuilder(
+                            animation: _shimmerController,
+                            builder: (context, child) {
+                              return ShaderMask(
+                                shaderCallback: (rect) {
+                                  return SweepGradient(
+                                    colors: [
+                                      const Color(0xFFD32F2F)
+                                          .withValues(alpha: 0.0),
+                                      const Color(0xFFD32F2F)
+                                          .withValues(alpha: 0.95),
+                                      const Color(0xFFD32F2F)
+                                          .withValues(alpha: 0.0),
+                                    ],
+                                    stops: const [0.0, 0.5, 1.0],
+                                    transform: GradientRotation(
+                                      _shimmerController.value * 6.2831853,
+                                    ),
+                                  ).createShader(rect);
+                                },
+                                child: Container(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(30),
+                                    border: Border.all(
+                                      color: Colors.white,
+                                      width: 1.7,
+                                    ),
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
     );
   }
 }

@@ -3,6 +3,7 @@ import { decodeJwtPayload } from '../utils/jwt';
 import { parseBearerToken } from '../utils/requestParsers';
 import { DeviceService, toPublicDevice } from '../services/deviceService';
 import { requireAdminSecret } from '../middleware/adminAuth';
+import { LmsClientAuthError, LmsService } from '../services/lmsService';
 
 function readUserIdFromToken(token: string): string | null {
     const payload = decodeJwtPayload(token);
@@ -14,7 +15,7 @@ function readUserIdFromToken(token: string): string | null {
     return userId || null;
 }
 
-export function createDeviceRouter(deviceService: DeviceService): Router {
+export function createDeviceRouter(deviceService: DeviceService, lmsService: LmsService): Router {
     const router = Router();
 
     router.get('/devices', async (req: Request, res: Response) => {
@@ -54,6 +55,8 @@ export function createDeviceRouter(deviceService: DeviceService): Router {
                 return;
             }
 
+            await lmsService.validateClientToken(idTokenFromHeader);
+
             const token = String(req.body?.token ?? '').trim();
             const platform = String(req.body?.platform ?? 'unknown').trim() || 'unknown';
             const userIdFromToken = readUserIdFromToken(idTokenFromHeader);
@@ -85,6 +88,14 @@ export function createDeviceRouter(deviceService: DeviceService): Router {
                 }
             });
         } catch (error: any) {
+            if (error instanceof LmsClientAuthError) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    detail: 'Invalid or expired Bearer token'
+                });
+                return;
+            }
             res.status(400).json({
                 success: false,
                 error: error?.message || 'Dang ky device that bai'
@@ -104,6 +115,8 @@ export function createDeviceRouter(deviceService: DeviceService): Router {
                 return;
             }
 
+            await lmsService.validateClientToken(idTokenFromHeader);
+
             const token = String(req.body?.token ?? '').trim();
             const removed = await deviceService.unregisterDevice(token);
 
@@ -117,6 +130,14 @@ export function createDeviceRouter(deviceService: DeviceService): Router {
                 }
             });
         } catch (error: any) {
+            if (error instanceof LmsClientAuthError) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Unauthorized',
+                    detail: 'Invalid or expired Bearer token'
+                });
+                return;
+            }
             res.status(400).json({
                 success: false,
                 error: error?.message || 'Go device that bai'
