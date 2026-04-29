@@ -1,188 +1,158 @@
-<div align="center">
+# LMS Smooth Bridge
 
-<img width="100%" src="https://capsule-render.vercel.app/api?type=waving&height=220&color=gradient&customColorList=1&text=LMS%20Smooth%20Bridge&fontSize=50&fontAlignY=40&desc=Proxy%20and%20Automation%20Middleware%20System&descAlignY=62" />
+Backend + mobile app for consuming LMS GraphQL data with a smoother UX:
+- backend proxy/transformation layer (`Node.js + TypeScript + Express + MongoDB`)
+- mobile client (`Flutter`)
 
-<img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=20&pause=1000&center=true&vCenter=true&width=900&lines=Optimizing+LMS+Payloads+(4MB+%E2%86%92+50KB);Multi-Tenant+Session+and+Auth+Management;Automated+Payroll+%2B+AI-Assisted+Evaluations;Node.js+%2B+MongoDB+%2B+Vercel+%2B+Flutter" />
+This project is for internal LMS accounts (users must have valid LMS/Firebase credentials).
 
-<br/>
+## Repository Layout
 
-<img src="https://img.shields.io/badge/Backend-Node.js%20%7C%20TS-339933?style=for-the-badge&logo=nodedotjs&logoColor=white" />
-<img src="https://img.shields.io/badge/Database-MongoDB_Atlas-47A248?style=for-the-badge&logo=mongodb&logoColor=white" />
-<img src="https://img.shields.io/badge/Hosting-Vercel-black?style=for-the-badge&logo=vercel" />
-<img src="https://img.shields.io/badge/Auth-Firebase-FFCA28?style=for-the-badge&logo=firebase&logoColor=white" />
-<img src="https://img.shields.io/badge/Mobile-Flutter-02569B?style=for-the-badge&logo=flutter&logoColor=white" />
-<img src="https://img.shields.io/badge/API-GraphQL-E10098?style=for-the-badge&logo=graphql&logoColor=white" />
-
-</div>
-
----
-
-## About The Project
-
-**LMS Smooth Bridge** is a dedicated backend middleware system designed to optimize, automate, and extend the capabilities of a legacy LMS for a custom mobile application. 
-
-Initially conceived to solve severe performance bottlenecks caused by heavy API payloads, this architecture is built to scale into a multi-tenant platform supporting up to 30 instructors. It seamlessly manages session states, drastically filters redundant data, and introduces powerful automation features like background payroll tracking and AI-assisted student evaluations.
-
----
-
-## System Architecture & Data Flow
-
+```text
+LMS-Smooth-Bridge/
+|- backend/
+|  |- src/
+|  |- .env.example
+|  |- package.json
+|- mobile/
+|  |- lib/
+|  |- pubspec.yaml
+|- README.md
 ```
-                                  ┌────────────────────┐
-                                  │   Flutter Mobile   │
-                                  │   (iOS & Android)  │
-                                  └─────────┬──────────┘
-                                            │ Optimized JSON Payload (< 50KB)
-                                            ▼
-                                  ┌───────────────────────┐
-                   ┌──────────────┤   LMS Smooth Bridge   ├──────────────┐
-                   │              │  (Node.js + Vercel)   │              │
-                   │              └─────────┬─────────────┘              │
-             Firebase Auth                  │ GraphQL                    │ MongoDB Atlas
-          (Auth & Token Swap)               │ (Heavy Payload: ~4MB)      │ (Sessions & Caching)
-                   ▼                        ▼                            ▼
-           ┌──────────────┐          ┌──────────────┐             ┌──────────────┐
-           │   Firebase   │          │ Upstream LMS │             │   MongoDB    │
-           └──────────────┘          └──────────────┘             └──────────────┘
-```
-### Core Data Flows
-Authentication Flow: Flutter app sends credentials ➔ Backend authenticates via Firebase ➔ Retrieves tokens & stores refreshToken in MongoDB ➔ Returns session ID to app.
 
-Proxy Flow: Mobile app requests data ➔ Backend retrieves active idToken ➔ Forwards request to LMS GraphQL ➔ Transforms & strips PII (4MB down to 50KB) ➔ Returns sanitized JSON.
+## Current Behavior
 
-Action Flow: Instructor submits attendance ➔ Backend compiles GraphQL mutation ➔ Executes on Upstream LMS.
+1. User logs in from mobile (Firebase REST `verifyPassword`).
+2. Mobile stores session locally and sends `Authorization: Bearer <id_token>` to backend.
+3. Backend calls LMS GraphQL with that token, filters/reshapes payload, and returns smaller JSON.
+4. Optional background notifier can run on backend for reminder pushes.
 
-### Key Features
-#### Payload Optimization (Data Transformation): 
-Intercepts massive GraphQL responses (up to 4MB), strips unnecessary metadata and PII, and delivers lightweight JSON (< 50KB) for a fluid mobile experience.
+## Backend Setup
 
-#### Multi-Tenant Session Management: 
-Secure auth for multiple instructors. Stores encrypted refreshTokens (MongoDB) and auto-negotiates with Firebase Auth to issue fresh idTokens, eliminating manual re-logins.
+### Requirements
 
-#### Automated Payroll & Timesheets: 
-Background cronjobs scan and aggregate completed teaching slots. Data is locally cached for instant payroll/timesheet reporting without hammering the LMS server.
+- Node.js `20.x`
+- MongoDB (Atlas or self-hosted)
 
-#### Smart Evaluation System: 
-Pre-defined evaluation templates for subjects (Game Maker, Robot 1, Python). Structured for AI integration to generate draft comments based on attendance and performance.
+### Install
 
-#### Push Notification Engine: 
-FCM-based auto-reminders for upcoming and active attendance windows.
-
-### Tech Stack
-```
-Layer	Technology
-Backend / API	Node.js, TypeScript (Express/Fastify)
-Database	MongoDB Atlas
-Mobile Client	Flutter (iOS & Android)
-Authentication	Firebase Auth (REST signInWithPassword)
-Deployment	Vercel (Serverless Functions)
-Target Endpoints	Firebase API, Upstream LMS GraphQL
-```
-### Code Structure
-```
-lms-smooth-bridge/
-├── src/
-│   ├── index.ts           # Server bootstrap
-│   ├── config/env.ts      # Env parsing and default configurations
-│   ├── db/                # MongoDB connection and schemas/models
-│   ├── services/          # Business logic: LMS Auth, LMS API, Windows, Notifiers
-│   └── routes/            # API endpoints grouped by feature
-├── .env.example           # Environment template
-└── package.json
-```
-### Getting Started
-1. Database Setup (MongoDB Atlas)
-   
-         Sign in to MongoDB Atlas and create a project (LMS-Smooth-Bridge).
-         Create a Free Tier Cluster.
-         In Database Access, create a user (e.g., lms_admin / <strong_password>) with the Atlas admin role.
-         In Network Access, whitelist your IP (use 0.0.0.0/0 temporarily for local dev).
-         Copy the connection string from Connect ➔ Drivers.
-
-2. Backend Authentication Setup (No More F12)
-Clone the repo and navigate to the backend folder:
-```
+```bash
+cd backend
 npm install
-cp .env.example .env
 ```
-Configure ONE of these Auth strategies in .env:
 
-Recommended: 
-```
-FIREBASE_API_KEY + LMS_REFRESH_TOKEN (Server auto-refreshes idToken).
-```   
-Alternative:
-```
-FIREBASE_API_KEY + LMS_EMAIL + LMS_PASSWORD (Server logs in ➔ auto-refreshes).
-```
-Set your MongoDB variables:
-```
-MONGO_URI="your_connection_string_here"
-MONGO_DB_NAME="lms_smooth_bridge"
-```
-3. Running Locally
-```
+### Environment
+
+Create `backend/.env` from `backend/.env.example`.
+
+Minimal required for normal API usage:
+- `MONGO_URI`
+- `MONGO_DB_NAME`
+
+For server-managed auth flows (refresh/login on backend):
+- `FIREBASE_API_KEY`
+- `LMS_REFRESH_TOKEN` (recommended) or `LMS_EMAIL` + `LMS_PASSWORD`
+
+Security and limits:
+- `ADMIN_API_SECRET`
+- `CORS_ORIGINS`
+- `RATE_LIMIT_WINDOW_SECONDS`
+- `RATE_LIMIT_MAX_REQUESTS`
+- `MAX_ITEMS_PER_PAGE`
+- `MAX_MAX_PAGES`
+- `MAX_LOOKAHEAD_MINUTES`
+- `MAX_REMINDER_SLOTS`
+
+Push notifier (optional):
+- `ENABLE_PUSH_NOTIFIER=true`
+- `FCM_SERVER_KEY`
+- `CRON_SECRET` (or use `x-admin-secret` with `ADMIN_API_SECRET`)
+
+### Run
+
+```bash
 npm run dev
 ```
-The server will log the active auth mode (refresh-token or email-password) and confirm MongoDB: connected.
 
-### API Ecosystem
-Firebase Auth: 
-```
-https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword?key=[KEY]
-```
-LMS GraphQL: 
-```
-https://lms-api.mindx.edu.vn/graphql
-```
-query GetClasses: Fetches assigned classes and student lists.
-mutation StudentAttendance: Submits attendance and teacher comments.
+Startup logs include auth mode, CORS mode, admin protection status, and push notifier status.
 
+## Mobile Setup
+
+### Requirements
+
+- Flutter SDK `>=3.3.0 <4.0.0`
+
+### Install and run
+
+```bash
+cd mobile
+flutter pub get
+flutter run
 ```
-GET /api/classes
-```
-Extends standard response with: classEndDate, isClassEnded, nextAttendanceWindow (slot details, open/close times, countdown).
 
-```
-GET /api/attendance-reminders
-```
-Returns upcoming attendance windows.
+Firebase API key for mobile login:
+- Preferred: provide at build/run time:
+  - `--dart-define=FIREBASE_API_KEY=...`
+- Fallback implemented: app can fetch key from backend `GET /api/public-config` (reads `FIREBASE_API_KEY` from backend env).
 
-Params: lookAheadMinutes (def: 1440), maxSlots (def: 20), activeOnly (def: true).
+If both are missing, login will fail with "missing Firebase API key".
 
-Rule: Opens 5 mins before slot start, closes 30 mins after slot end.
+## API Overview
 
-```
-GET /api/payroll/monthly
-```
-Query Params: month (1-12), year (YYYY), timezone, teacherId / username, countedStatuses (def: ATTENDED,LATE_ARRIVED).
+Base URL: `https://<your-domain>/api`
 
-Returns: Total taught slots, roles (LEC, TA, Judge), and slot-level details for manual verification.
+### Public
 
-#### Requires .env config: ENABLE_PUSH_NOTIFIER=true + FCM Credentials.
+- `GET /public-config`
+  - returns `firebaseApiKey` for mobile fallback config
 
-Registration: - POST /api/devices/register - { token, platform, userId?, timezone?, appVersion? }
+### Requires Bearer Token
 
-```
-POST /api/devices/unregister - { token }
-```
-#### Operations:
-```
-GET /api/notifier/status - Runtime health check.
+- `GET /classes`
+- `GET /attendance-reminders`
+- `GET /attendance/slot/comments`
+- `POST /attendance/slot/comments`
+- `POST /attendance/slot`
+- `GET /payroll/monthly`
+- `POST /devices/register`
+- `POST /devices/unregister`
 
-POST /api/notifications/test - Trigger test push.
-```
-Automation: Sends UPCOMING (15 mins prior) and OPEN reminders. Deduplication active to prevent spam.
+### Requires Admin Secret (`x-admin-secret`)
 
-Development Roadmap
-```
-[x] Phase 1: Prototype (MVP) - The Data Filter: Node.js backend setup, hardcoded token connection, core parser built to crush 4MB payloads to 50KB.
+- `GET /devices`
+- `GET /notifier/status`
+- `POST /notifications/test`
 
-[x] Phase 2: Multi-Tenant Auth: MongoDB integration, Users schema, automated login, and token refresh logic.
+### Scheduled Tick Endpoint
 
-[x] Phase 3: Flutter Mobile App: Dashboard, Class List, and Attendance Form UI connected to optimized endpoints.
+- `POST /notifier/tick`
+  - auth: `x-cron-secret` (if `CRON_SECRET` is set) or valid `x-admin-secret`
+  - if both `CRON_SECRET` and `ADMIN_API_SECRET` are missing, endpoint is disabled (`503`)
 
-[x] Phase 4: Payroll Automation: Cronjobs for slot aggregation, working hour compilation, and automated salary calculation.
+## Security Notes
 
-[ ] Phase 5: Evaluation Engine: AI-generated grading drafts and subject-specific comment templates.
-```
+- Global in-memory rate limit is applied to `/api/*`.
+- Browser CORS is allowlist-based (`CORS_ORIGINS`).
+- Query pagination/lookahead inputs are clamped by env max values.
+- Admin endpoints are disabled until `ADMIN_API_SECRET` is configured.
+- Device tokens and user sessions are stored in MongoDB; remember-password on mobile is stored in secure storage.
+
+## Deploy Notes (Vercel)
+
+1. Set backend env vars in Vercel project settings.
+2. Deploy backend first (so `/api/public-config` is available).
+3. Deploy mobile build with either:
+   - `--dart-define=FIREBASE_API_KEY=...`, or
+   - rely on backend fallback key endpoint.
+
+## Quick Troubleshooting
+
+- "Missing Firebase API key":
+  - set `FIREBASE_API_KEY` in `backend/.env` (and redeploy backend), or
+  - pass `--dart-define=FIREBASE_API_KEY=...` when running/building mobile.
+
+- `401 Authorization header khong hop le`:
+  - send `Authorization: Bearer <id_token>`.
+
+- Admin API returns `503 Admin API is disabled`:
+  - set `ADMIN_API_SECRET`.
