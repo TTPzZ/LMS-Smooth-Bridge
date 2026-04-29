@@ -8,7 +8,7 @@ export function createPayrollRouter(payrollService: PayrollService): Router {
     router.get('/payroll/monthly', async (req: Request, res: Response) => {
         try {
             const idTokenFromHeader = parseBearerToken(req.headers.authorization);
-            if (req.headers.authorization && !idTokenFromHeader) {
+            if (!idTokenFromHeader) {
                 res.status(401).json({
                     success: false,
                     error: 'Authorization header khong hop le',
@@ -21,12 +21,12 @@ export function createPayrollRouter(payrollService: PayrollService): Router {
                 month: req.query.month,
                 year: req.query.year,
                 timezone: req.query.timezone,
-                teacherId: req.query.teacherId,
-                username: req.query.username,
+                teacherId: undefined,
+                username: undefined,
                 itemsPerPage: req.query.itemsPerPage,
                 maxPages: req.query.maxPages,
                 countedStatuses: req.query.countedStatuses
-            }, idTokenFromHeader ?? undefined);
+            }, idTokenFromHeader);
 
             res.json({
                 success: true,

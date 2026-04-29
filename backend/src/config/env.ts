@@ -27,6 +27,17 @@ function parseIntegerEnv(value: string | undefined, fallback: number): number {
     return parsed;
 }
 
+function parseStringListEnv(value: string | undefined): string[] {
+    if (!value) {
+        return [];
+    }
+
+    return value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+}
+
 const parsedPort = Number.parseInt(process.env.PORT ?? '3000', 10);
 
 export const env = {
@@ -34,16 +45,25 @@ export const env = {
     LMS_GRAPHQL_URL: process.env.LMS_GRAPHQL_URL?.trim() || 'https://lms-api.mindx.edu.vn/graphql',
     DEFAULT_ITEMS_PER_PAGE: parseIntegerEnv(process.env.DEFAULT_ITEMS_PER_PAGE, 50),
     DEFAULT_MAX_PAGES: parseIntegerEnv(process.env.DEFAULT_MAX_PAGES, 10),
+    MAX_ITEMS_PER_PAGE: parseIntegerEnv(process.env.MAX_ITEMS_PER_PAGE, 100),
+    MAX_MAX_PAGES: parseIntegerEnv(process.env.MAX_MAX_PAGES, 20),
     ATTENDANCE_OPEN_MINUTES_BEFORE: parseIntegerEnv(process.env.ATTENDANCE_OPEN_MINUTES_BEFORE, 5),
     ATTENDANCE_CLOSE_MINUTES_AFTER: parseIntegerEnv(process.env.ATTENDANCE_CLOSE_MINUTES_AFTER, 30),
     DEFAULT_LOOKAHEAD_MINUTES: parseIntegerEnv(process.env.DEFAULT_LOOKAHEAD_MINUTES, 24 * 60),
     DEFAULT_MAX_REMINDER_SLOTS: parseIntegerEnv(process.env.DEFAULT_MAX_REMINDER_SLOTS, 20),
+    MAX_LOOKAHEAD_MINUTES: parseIntegerEnv(process.env.MAX_LOOKAHEAD_MINUTES, 7 * 24 * 60),
+    MAX_REMINDER_SLOTS: parseIntegerEnv(process.env.MAX_REMINDER_SLOTS, 200),
+    RATE_LIMIT_WINDOW_SECONDS: parseIntegerEnv(process.env.RATE_LIMIT_WINDOW_SECONDS, 60),
+    RATE_LIMIT_MAX_REQUESTS: parseIntegerEnv(process.env.RATE_LIMIT_MAX_REQUESTS, 120),
+    TRUST_PROXY: parseBooleanEnv(process.env.TRUST_PROXY, true),
+    CORS_ORIGINS: parseStringListEnv(process.env.CORS_ORIGINS),
 
     FIREBASE_API_KEY: process.env.FIREBASE_API_KEY?.trim() ?? '',
     LMS_EMAIL: process.env.LMS_EMAIL?.trim() ?? '',
     LMS_PASSWORD: process.env.LMS_PASSWORD?.trim() ?? '',
     LMS_ID_TOKEN: process.env.LMS_ID_TOKEN?.trim() ?? '',
     LMS_REFRESH_TOKEN: process.env.LMS_REFRESH_TOKEN?.trim() ?? '',
+    ADMIN_API_SECRET: process.env.ADMIN_API_SECRET?.trim() ?? '',
 
     MONGO_URI: process.env.MONGO_URI?.trim() ?? '',
     MONGO_DB_NAME: process.env.MONGO_DB_NAME?.trim() ?? '',
@@ -54,9 +74,7 @@ export const env = {
     PUSH_HISTORY_TTL_HOURS: parseIntegerEnv(process.env.PUSH_HISTORY_TTL_HOURS, 72),
     CRON_SECRET: process.env.CRON_SECRET?.trim() ?? '',
 
-    FCM_PROJECT_ID: process.env.FCM_PROJECT_ID?.trim() ?? '',
-    FCM_CLIENT_EMAIL: process.env.FCM_CLIENT_EMAIL?.trim() ?? '',
-    FCM_PRIVATE_KEY: (process.env.FCM_PRIVATE_KEY ?? '').replace(/\\n/g, '\n')
+    FCM_SERVER_KEY: process.env.FCM_SERVER_KEY?.trim() ?? ''
 };
 
 export const firebaseVerifyPasswordUrl = env.FIREBASE_API_KEY

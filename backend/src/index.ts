@@ -10,6 +10,14 @@ async function bootstrap(): Promise<void> {
         console.log(`Auth mode: ${authTokenService.getAuthMode()}`);
         console.log(`Push notifier: ${env.ENABLE_PUSH_NOTIFIER ? 'enabled' : 'disabled'}`);
         console.log('MongoDB: connected');
+        console.log(
+            `Admin APIs: ${env.ADMIN_API_SECRET.trim() ? 'protected' : 'disabled (missing ADMIN_API_SECRET)'}`
+        );
+        if (env.CORS_ORIGINS.length === 0) {
+            console.log('CORS: no allowed origins configured (browser CORS requests are blocked by default)');
+        } else {
+            console.log(`CORS: allowlist(${env.CORS_ORIGINS.length}) configured`);
+        }
 
         if (env.ENABLE_PUSH_NOTIFIER) {
             notifierService.start();

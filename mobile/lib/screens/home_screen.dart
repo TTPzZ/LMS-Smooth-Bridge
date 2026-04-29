@@ -218,7 +218,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
     final classes = await _api.getClasses(
       activeOnly: true,
-      username: username,
     );
     final runningClasses = _filterRunningClasses(classes);
     await _dashboardCache.saveClasses(
@@ -246,7 +245,6 @@ class _HomeScreenState extends State<HomeScreen> {
       lookAheadMinutes: 7 * 24 * 60,
       maxSlots: 200,
       activeOnly: true,
-      username: username,
     );
     await _dashboardCache.saveReminders(
       username: username,
@@ -276,7 +274,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final payroll = await _api.getMonthlyPayroll(
       month: month,
       year: year,
-      username: username.isEmpty ? null : username,
     );
     await _dashboardCache.savePayroll(
       username: username,

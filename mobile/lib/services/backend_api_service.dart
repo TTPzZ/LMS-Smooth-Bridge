@@ -134,16 +134,12 @@ class BackendApiService {
     bool activeOnly = true,
     int itemsPerPage = 50,
     int maxPages = 10,
-    String? username,
   }) async {
     final query = <String, String>{
       'activeOnly': activeOnly.toString(),
       'itemsPerPage': itemsPerPage.toString(),
       'maxPages': maxPages.toString(),
     };
-    if (username != null && username.trim().isNotEmpty) {
-      query['username'] = username.trim();
-    }
 
     final json = await _getJson('/classes', query: query);
 
@@ -164,16 +160,12 @@ class BackendApiService {
     int lookAheadMinutes = 180,
     int maxSlots = 20,
     bool activeOnly = true,
-    String? username,
   }) async {
     final query = <String, String>{
       'lookAheadMinutes': lookAheadMinutes.toString(),
       'maxSlots': maxSlots.toString(),
       'activeOnly': activeOnly.toString(),
     };
-    if (username != null && username.trim().isNotEmpty) {
-      query['username'] = username.trim();
-    }
 
     final json = await _getJson('/attendance-reminders', query: query);
 
@@ -193,7 +185,6 @@ class BackendApiService {
   Future<PayrollResponse> getMonthlyPayroll({
     required int month,
     required int year,
-    String? username,
     String timezone = 'Asia/Ho_Chi_Minh',
     String countedStatuses = 'ATTENDED,LATE_ARRIVED',
   }) async {
@@ -203,9 +194,6 @@ class BackendApiService {
       'timezone': timezone,
       'countedStatuses': countedStatuses,
     };
-    if (username != null && username.trim().isNotEmpty) {
-      query['username'] = username.trim();
-    }
 
     final json = await _getJson('/payroll/monthly', query: query);
     final data = json['data'];

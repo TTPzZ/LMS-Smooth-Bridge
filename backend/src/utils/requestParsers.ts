@@ -7,6 +7,28 @@ export function parseIntegerQuery(value: unknown, fallback: number): number {
     return parsedValue;
 }
 
+export function parseIntegerInRange(
+    value: unknown,
+    fallback: number,
+    min: number,
+    max: number
+): number {
+    const parsedValue = parseIntegerQuery(value, fallback);
+    const normalizedMin = Number.isFinite(min) ? Math.floor(min) : 1;
+    const normalizedMax = Number.isFinite(max) ? Math.floor(max) : normalizedMin;
+    const lowerBound = Math.max(1, Math.min(normalizedMin, normalizedMax));
+    const upperBound = Math.max(lowerBound, Math.max(normalizedMin, normalizedMax));
+
+    if (parsedValue < lowerBound) {
+        return lowerBound;
+    }
+    if (parsedValue > upperBound) {
+        return upperBound;
+    }
+
+    return parsedValue;
+}
+
 export function parseBooleanQuery(value: unknown, fallback: boolean): boolean {
     if (value === undefined || value === null) {
         return fallback;

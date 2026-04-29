@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import '../models/auth_models.dart';
 import '../services/auth_session_manager.dart';
+import '../services/secure_store_service.dart';
 import '../theme/app_theme.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -25,10 +26,15 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   static const String _requiredDomain = 'mindx.net.vn';
   static const String _rememberPasswordKey = 'auth.remember_password_v1';
-  static const String _rememberedEmailKey = 'auth.remembered_email_v1';
-  static const String _rememberedPasswordKey = 'auth.remembered_password_v1';
+  static const String _legacyRememberedEmailKey = 'auth.remembered_email_v1';
+  static const String _legacyRememberedPasswordKey =
+      'auth.remembered_password_v1';
+  static const String _rememberedEmailSecureKey = 'secure.remembered_email_v1';
+  static const String _rememberedPasswordSecureKey =
+      'secure.remembered_password_v1';
 
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+  final SecureStoreService _secureStore = const SecureStoreService();
   late final TextEditingController _emailController;
   late final TextEditingController _passwordController;
   late final FocusNode _emailFocusNode;
@@ -102,8 +108,34 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _loadRememberedCredentials() async {
     final prefs = await SharedPreferences.getInstance();
     final remember = prefs.getBool(_rememberPasswordKey) ?? false;
-    final savedEmail = prefs.getString(_rememberedEmailKey) ?? '';
-    final savedPassword = prefs.getString(_rememberedPasswordKey) ?? '';
+    var savedEmail = '';
+    var savedPassword = '';
+    if (remember) {
+      savedEmail = (await _secureStore.read(key: _rememberedEmailSecureKey)) ?? '';
+      savedPassword =
+          (await _secureStore.read(key: _rememberedPasswordSecureKey)) ?? '';
+
+      // Legacy migration from plain SharedPreferences to secure storage.
+      if (savedEmail.isEmpty && savedPassword.isEmpty) {
+        final legacyEmail = prefs.getString(_legacyRememberedEmailKey) ?? '';
+        final legacyPassword =
+            prefs.getString(_legacyRememberedPasswordKey) ?? '';
+        if (legacyEmail.isNotEmpty || legacyPassword.isNotEmpty) {
+          savedEmail = legacyEmail;
+          savedPassword = legacyPassword;
+          await _secureStore.write(
+            key: _rememberedEmailSecureKey,
+            value: savedEmail,
+          );
+          await _secureStore.write(
+            key: _rememberedPasswordSecureKey,
+            value: savedPassword,
+          );
+          await prefs.remove(_legacyRememberedEmailKey);
+          await prefs.remove(_legacyRememberedPasswordKey);
+        }
+      }
+    }
 
     if (!mounted) {
       return;
@@ -129,14 +161,21 @@ class _LoginScreenState extends State<LoginScreen> {
     final prefs = await SharedPreferences.getInstance();
     if (!_rememberPassword) {
       await prefs.setBool(_rememberPasswordKey, false);
-      await prefs.remove(_rememberedEmailKey);
-      await prefs.remove(_rememberedPasswordKey);
+      await _secureStore.delete(key: _rememberedEmailSecureKey);
+      await _secureStore.delete(key: _rememberedPasswordSecureKey);
+      await prefs.remove(_legacyRememberedEmailKey);
+      await prefs.remove(_legacyRememberedPasswordKey);
       return;
     }
 
     await prefs.setBool(_rememberPasswordKey, true);
-    await prefs.setString(_rememberedEmailKey, email);
-    await prefs.setString(_rememberedPasswordKey, password);
+    await _secureStore.write(key: _rememberedEmailSecureKey, value: email);
+    await _secureStore.write(
+      key: _rememberedPasswordSecureKey,
+      value: password,
+    );
+    await prefs.remove(_legacyRememberedEmailKey);
+    await prefs.remove(_legacyRememberedPasswordKey);
   }
 
   Future<void> _onRememberPasswordChanged(bool? value) async {

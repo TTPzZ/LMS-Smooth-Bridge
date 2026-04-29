@@ -1,5 +1,6 @@
 import cors from 'cors';
 import express from 'express';
+import { env } from './config/env';
 import { connectMongo } from './db/mongo';
 import { AuthTokenService } from './services/authTokenService';
 import { LmsService } from './services/lmsService';
@@ -10,6 +11,7 @@ import { createClassRouter } from './routes/classRoutes';
 import { createDeviceRouter } from './routes/deviceRoutes';
 import { createNotifierRouter } from './routes/notifierRoutes';
 import { createPayrollRouter } from './routes/payrollRoutes';
+import { createInMemoryRateLimiter } from './middleware/rateLimit';
 
 export type AppContext = {
     app: express.Express;
@@ -22,8 +24,31 @@ let appContextPromise: Promise<AppContext> | null = null;
 async function buildAppContext(): Promise<AppContext> {
     const app = express();
 
-    app.use(cors());
-    app.use(express.json());
+    const allowedOrigins = new Set(env.CORS_ORIGINS.map((origin) => origin.trim()).filter(Boolean));
+
+    app.set('trust proxy', env.TRUST_PROXY ? 1 : 0);
+    app.use(cors({
+        origin(origin, callback) {
+            if (!origin) {
+                callback(null, true);
+                return;
+            }
+
+            if (allowedOrigins.size === 0) {
+                callback(null, false);
+                return;
+            }
+
+            callback(null, allowedOrigins.has(origin));
+        },
+        methods: ['GET', 'POST', 'OPTIONS'],
+        allowedHeaders: ['Content-Type', 'Authorization', 'x-cron-secret', 'x-admin-secret']
+    }));
+    app.use(express.json({ limit: '1mb' }));
+    app.use('/api', createInMemoryRateLimiter({
+        windowMs: env.RATE_LIMIT_WINDOW_SECONDS * 1000,
+        maxRequests: env.RATE_LIMIT_MAX_REQUESTS
+    }));
 
     await connectMongo();
 

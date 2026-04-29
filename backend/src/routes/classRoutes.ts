@@ -9,7 +9,7 @@ import {
     shouldIncludeSlotForPrincipal,
     toPublicAttendanceWindow
 } from '../services/attendanceWindowService';
-import { parseBearerToken, parseBooleanQuery, parseIntegerQuery, sanitizePositiveInt } from '../utils/requestParsers';
+import { parseBearerToken, parseBooleanQuery, parseIntegerInRange } from '../utils/requestParsers';
 import {
     LmsClassRecord,
     LmsClassStudent,
@@ -207,11 +207,8 @@ function collectCoTeachers(
     return Array.from(coTeacherMap.values());
 }
 
-function readPrincipal(req: Request, idTokenFromHeader: string | null | undefined): ReminderPrincipal {
+function readPrincipal(idTokenFromHeader: string | null | undefined): ReminderPrincipal {
     const tokenPayload = idTokenFromHeader ? decodeJwtPayload(idTokenFromHeader) : null;
-    const usernameFromQuery = typeof req.query.username === 'string'
-        ? req.query.username.trim()
-        : '';
     const usernameFromToken = typeof tokenPayload?.username === 'string'
         ? tokenPayload.username.trim()
         : '';
@@ -221,7 +218,6 @@ function readPrincipal(req: Request, idTokenFromHeader: string | null | undefine
     const derivedFromEmail = deriveUsernameFromEmail(emailFromToken);
 
     const usernames = Array.from(new Set([
-        usernameFromQuery,
         usernameFromToken,
         emailFromToken,
         derivedFromEmail
@@ -966,7 +962,7 @@ export function createClassRouter(lmsService: LmsService): Router {
     router.get('/classes', async (req: Request, res: Response) => {
         try {
             const idTokenFromHeader = parseBearerToken(req.headers.authorization);
-            if (req.headers.authorization && !idTokenFromHeader) {
+            if (!idTokenFromHeader) {
                 res.status(401).json({
                     success: false,
                     error: 'Authorization header khong hop le',
@@ -975,19 +971,29 @@ export function createClassRouter(lmsService: LmsService): Router {
                 return;
             }
 
-            const itemsPerPage = parseIntegerQuery(req.query.itemsPerPage, env.DEFAULT_ITEMS_PER_PAGE);
-            const maxPages = parseIntegerQuery(req.query.maxPages, env.DEFAULT_MAX_PAGES);
+            const itemsPerPage = parseIntegerInRange(
+                req.query.itemsPerPage,
+                env.DEFAULT_ITEMS_PER_PAGE,
+                1,
+                env.MAX_ITEMS_PER_PAGE
+            );
+            const maxPages = parseIntegerInRange(
+                req.query.maxPages,
+                env.DEFAULT_MAX_PAGES,
+                1,
+                env.MAX_MAX_PAGES
+            );
             const activeOnly = parseBooleanQuery(req.query.activeOnly, true);
             const now = new Date();
             const nowMs = now.getTime();
-            const principal = readPrincipal(req, idTokenFromHeader);
+            const principal = readPrincipal(idTokenFromHeader);
 
             const {
                 classes,
                 fetchedPages,
                 totalRawClasses,
                 totalUniqueClasses
-            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader ?? undefined);
+            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader);
 
             const cleanClasses = classes
                 .filter((cls) => (activeOnly ? isRunningClass(cls, now) : true))
@@ -1084,7 +1090,7 @@ export function createClassRouter(lmsService: LmsService): Router {
     router.get('/attendance-reminders', async (req: Request, res: Response) => {
         try {
             const idTokenFromHeader = parseBearerToken(req.headers.authorization);
-            if (req.headers.authorization && !idTokenFromHeader) {
+            if (!idTokenFromHeader) {
                 res.status(401).json({
                     success: false,
                     error: 'Authorization header khong hop le',
@@ -1093,22 +1099,42 @@ export function createClassRouter(lmsService: LmsService): Router {
                 return;
             }
 
-            const itemsPerPage = parseIntegerQuery(req.query.itemsPerPage, env.DEFAULT_ITEMS_PER_PAGE);
-            const maxPages = parseIntegerQuery(req.query.maxPages, env.DEFAULT_MAX_PAGES);
+            const itemsPerPage = parseIntegerInRange(
+                req.query.itemsPerPage,
+                env.DEFAULT_ITEMS_PER_PAGE,
+                1,
+                env.MAX_ITEMS_PER_PAGE
+            );
+            const maxPages = parseIntegerInRange(
+                req.query.maxPages,
+                env.DEFAULT_MAX_PAGES,
+                1,
+                env.MAX_MAX_PAGES
+            );
             const activeOnly = parseBooleanQuery(req.query.activeOnly, true);
-            const lookAheadMinutes = sanitizePositiveInt(req.query.lookAheadMinutes, env.DEFAULT_LOOKAHEAD_MINUTES);
-            const maxSlots = sanitizePositiveInt(req.query.maxSlots, env.DEFAULT_MAX_REMINDER_SLOTS);
+            const lookAheadMinutes = parseIntegerInRange(
+                req.query.lookAheadMinutes,
+                env.DEFAULT_LOOKAHEAD_MINUTES,
+                1,
+                env.MAX_LOOKAHEAD_MINUTES
+            );
+            const maxSlots = parseIntegerInRange(
+                req.query.maxSlots,
+                env.DEFAULT_MAX_REMINDER_SLOTS,
+                1,
+                env.MAX_REMINDER_SLOTS
+            );
             const now = new Date();
             const nowMs = now.getTime();
             const lookAheadUntilMs = nowMs + lookAheadMinutes * 60_000;
-            const principal = readPrincipal(req, idTokenFromHeader);
+            const principal = readPrincipal(idTokenFromHeader);
 
             const {
                 classes,
                 fetchedPages,
                 totalRawClasses,
                 totalUniqueClasses
-            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader ?? undefined);
+            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader);
 
             const filteredClasses = classes.filter((cls) => (activeOnly ? isRunningClass(cls, now) : true));
             const windows = filteredClasses.flatMap((cls) => getClassAttendanceWindows(cls, nowMs, principal))

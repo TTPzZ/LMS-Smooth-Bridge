@@ -1,20 +1,25 @@
 import 'dart:convert';
 
-import 'package:shared_preferences/shared_preferences.dart';
-
 import '../models/auth_models.dart';
+import 'secure_store_service.dart';
 
 class AuthStorageService {
   static const String _sessionKey = 'auth_session_v1';
+  final SecureStoreService _secureStore;
+
+  AuthStorageService({
+    SecureStoreService? secureStore,
+  }) : _secureStore = secureStore ?? const SecureStoreService();
 
   Future<void> saveSession(AuthSession session) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_sessionKey, jsonEncode(session.toJson()));
+    await _secureStore.write(
+      key: _sessionKey,
+      value: jsonEncode(session.toJson()),
+    );
   }
 
   Future<AuthSession?> loadSession() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_sessionKey);
+    final raw = await _secureStore.read(key: _sessionKey);
     if (raw == null || raw.trim().isEmpty) {
       return null;
     }
@@ -49,7 +54,6 @@ class AuthStorageService {
   }
 
   Future<void> clearSession() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_sessionKey);
+    await _secureStore.delete(key: _sessionKey);
   }
 }

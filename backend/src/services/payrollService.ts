@@ -6,7 +6,7 @@ import {
     LmsTimesheetItem
 } from '../types/lms';
 import { decodeJwtPayload } from '../utils/jwt';
-import { parseIntegerQuery } from '../utils/requestParsers';
+import { parseIntegerInRange } from '../utils/requestParsers';
 import { LmsService } from './lmsService';
 
 type PayrollParams = {
@@ -236,8 +236,8 @@ export class PayrollService {
         usernameQuery: unknown,
         idTokenOverride?: string
     ): Promise<TeacherPrincipal> {
-        const teacherId = String(teacherIdQuery ?? '').trim() || null;
-        const username = String(usernameQuery ?? '').trim() || null;
+        const queryTeacherId = String(teacherIdQuery ?? '').trim() || null;
+        const queryUsername = String(usernameQuery ?? '').trim() || null;
         let payload = null;
         try {
             const token = await this.lmsService.getCurrentAuthToken(idTokenOverride);
@@ -262,13 +262,17 @@ export class PayrollService {
             ? payload.id.trim()
             : null;
 
-        const hasQueryIdentity = Boolean(teacherId || username);
+        const hasTokenIdentity = Boolean(tokenTeacherId || tokenUsername || tokenInternalUserId);
+        const hasQueryIdentity = Boolean(queryTeacherId || queryUsername);
+        const teacherId = hasTokenIdentity ? tokenTeacherId : queryTeacherId;
+        const username = hasTokenIdentity ? tokenUsername : queryUsername;
+
         return {
             teacherId: teacherId || tokenTeacherId || null,
-            username: username || tokenUsername || null,
+            username: username || null,
             internalUserId: tokenInternalUserId || (isObjectId(teacherId) ? teacherId : null),
             teacherObjectId: isObjectId(teacherId) ? teacherId : null,
-            source: hasQueryIdentity ? 'query' : 'token'
+            source: hasTokenIdentity || !hasQueryIdentity ? 'token' : 'query'
         };
     }
 
@@ -500,15 +504,21 @@ export class PayrollService {
 
         const now = new Date();
         const nowParts = getDatePartsInTimeZone(now, timezone);
-        const month = parseIntegerQuery(params.month, nowParts.month);
-        const year = parseIntegerQuery(params.year, nowParts.year);
-        const itemsPerPage = parseIntegerQuery(params.itemsPerPage, env.DEFAULT_ITEMS_PER_PAGE);
-        const maxPages = parseIntegerQuery(params.maxPages, env.DEFAULT_MAX_PAGES);
+        const month = parseIntegerInRange(params.month, nowParts.month, 1, 12);
+        const year = parseIntegerInRange(params.year, nowParts.year, 2000, 2100);
+        const itemsPerPage = parseIntegerInRange(
+            params.itemsPerPage,
+            env.DEFAULT_ITEMS_PER_PAGE,
+            1,
+            env.MAX_ITEMS_PER_PAGE
+        );
+        const maxPages = parseIntegerInRange(
+            params.maxPages,
+            env.DEFAULT_MAX_PAGES,
+            1,
+            env.MAX_MAX_PAGES
+        );
         const countedStatusesSet = new Set(normalizeCountedStatuses(params.countedStatuses));
-
-        if (month < 1 || month > 12) {
-            throw new Error('month khong hop le (1-12)');
-        }
 
         const principal = await this.resolvePrincipal(params.teacherId, params.username, idTokenOverride);
         if (!principal.teacherId && !principal.username && !principal.internalUserId) {

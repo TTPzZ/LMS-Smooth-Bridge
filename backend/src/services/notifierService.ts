@@ -1,4 +1,3 @@
-import admin from 'firebase-admin';
 import { env } from '../config/env';
 import { Device } from '../db/models/device.model';
 import { NotificationEvent } from '../db/models/notification-event.model';
@@ -41,10 +40,18 @@ const COMMENT_REMINDER_HOUR = 12;
 const COMMENT_REMINDER_WINDOW_MINUTES = 20;
 
 function shouldRemoveInvalidToken(error: unknown): boolean {
-    const errorCode = (error as { code?: string })?.code || '';
+    const errorCode = String((error as { code?: string })?.code ?? '');
     return errorCode === 'messaging/registration-token-not-registered'
-        || errorCode === 'messaging/invalid-registration-token';
+        || errorCode === 'messaging/invalid-registration-token'
+        || errorCode === 'InvalidRegistration'
+        || errorCode === 'NotRegistered';
 }
+
+type PushContent = {
+    title: string;
+    body: string;
+    data: Record<string, string>;
+};
 
 function normalizeIdentity(value: string | null | undefined): string {
     return String(value ?? '').trim().toLowerCase();
@@ -189,40 +196,61 @@ export class NotifierService {
         return env.PUSH_HISTORY_TTL_HOURS * 60 * 60 * 1000;
     }
 
-    private async getMessaging(): Promise<admin.messaging.Messaging | null> {
-        if (!env.ENABLE_PUSH_NOTIFIER) {
-            return null;
+    private hasPushTransport(): boolean {
+        return Boolean(env.FCM_SERVER_KEY);
+    }
+
+    private async sendPushToToken(token: string, content: PushContent): Promise<void> {
+        const serverKey = env.FCM_SERVER_KEY;
+        if (!serverKey) {
+            const error = new Error('Thieu FCM_SERVER_KEY') as Error & { code?: string };
+            error.code = 'FCM_SERVER_KEY_MISSING';
+            throw error;
         }
 
-        if (!admin.apps.length) {
-            try {
-                const hasInlineServiceAccount = Boolean(
-                    env.FCM_PROJECT_ID && env.FCM_CLIENT_EMAIL && env.FCM_PRIVATE_KEY
-                );
+        const response = await fetch('https://fcm.googleapis.com/fcm/send', {
+            method: 'POST',
+            headers: {
+                Authorization: `key=${serverKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                to: token,
+                priority: 'high',
+                notification: {
+                    title: content.title,
+                    body: content.body
+                },
+                data: content.data
+            })
+        });
 
-                if (hasInlineServiceAccount) {
-                    admin.initializeApp({
-                        credential: admin.credential.cert({
-                            projectId: env.FCM_PROJECT_ID,
-                            clientEmail: env.FCM_CLIENT_EMAIL,
-                            privateKey: env.FCM_PRIVATE_KEY
-                        })
-                    });
-                } else {
-                    admin.initializeApp();
-                }
-            } catch (error: any) {
-                console.error('Khoi tao FCM that bai:', error?.message || error);
-                return null;
-            }
+        const bodyText = await response.text();
+        if (!response.ok) {
+            const error = new Error(`FCM HTTP ${response.status}: ${bodyText.slice(0, 300)}`) as Error & { code?: string };
+            error.code = 'FCM_HTTP_ERROR';
+            throw error;
         }
 
+        let payload: any = {};
         try {
-            return admin.messaging();
-        } catch (error: any) {
-            console.error('Khoi tao Firebase Messaging that bai:', error?.message || error);
-            return null;
+            payload = bodyText ? JSON.parse(bodyText) : {};
+        } catch {
+            const error = new Error(`FCM response khong phai JSON: ${bodyText.slice(0, 300)}`) as Error & { code?: string };
+            error.code = 'FCM_INVALID_RESPONSE';
+            throw error;
         }
+
+        const firstResult = Array.isArray(payload?.results) ? payload.results[0] : null;
+        const success = Number(payload?.success ?? 0);
+        if (success > 0 && !firstResult?.error) {
+            return;
+        }
+
+        const code = String(firstResult?.error ?? 'FCM_SEND_FAILED');
+        const error = new Error(`FCM send failed: ${code}`) as Error & { code?: string };
+        error.code = code;
+        throw error;
     }
 
     private buildAttendanceNotificationCandidates(
@@ -478,8 +506,7 @@ export class NotifierService {
             return;
         }
 
-        const messaging = await this.getMessaging();
-        if (!messaging) {
+        if (!this.hasPushTransport()) {
             return;
         }
 
@@ -531,21 +558,10 @@ export class NotifierService {
                     }
 
                     try {
-                        await messaging.send({
-                            token,
-                            notification: {
-                                title: candidate.title,
-                                body: candidate.body
-                            },
-                            data: candidate.data,
-                            android: {
-                                priority: 'high'
-                            },
-                            apns: {
-                                headers: {
-                                    'apns-priority': '10'
-                                }
-                            }
+                        await this.sendPushToToken(token, {
+                            title: candidate.title,
+                            body: candidate.body,
+                            data: candidate.data
                         });
 
                         await this.markNotificationAsSent(token, candidate);
@@ -617,7 +633,7 @@ export class NotifierService {
             commentReminderTimeZone: COMMENT_REMINDER_TIMEZONE,
             registeredDevices,
             notifierRunning: this.tickInProgress,
-            firebaseInitialized: admin.apps.length > 0
+            pushTransportConfigured: this.hasPushTransport()
         };
     }
 
@@ -626,9 +642,8 @@ export class NotifierService {
             throw new Error('Push notifier dang tat. Set ENABLE_PUSH_NOTIFIER=true trong backend/.env');
         }
 
-        const messaging = await this.getMessaging();
-        if (!messaging) {
-            throw new Error('Khong khoi tao duoc Firebase Messaging');
+        if (!this.hasPushTransport()) {
+            throw new Error('Thieu FCM_SERVER_KEY');
         }
 
         const targetTokens = token
@@ -645,18 +660,12 @@ export class NotifierService {
 
         for (const targetToken of targetTokens) {
             try {
-                await messaging.send({
-                    token: targetToken,
-                    notification: {
-                        title,
-                        body
-                    },
+                await this.sendPushToToken(targetToken, {
+                    title,
+                    body,
                     data: {
                         type: 'attendance_reminder_test',
                         sentAt: new Date().toISOString()
-                    },
-                    android: {
-                        priority: 'high'
                     }
                 });
                 sent += 1;
