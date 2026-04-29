@@ -12,6 +12,16 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
+class DashboardOverviewResult {
+  final List<ClassSummary> classes;
+  final List<ReminderItem> reminders;
+
+  const DashboardOverviewResult({
+    required this.classes,
+    required this.reminders,
+  });
+}
+
 class BackendApiService {
   final String baseUrl;
   final http.Client _client;
@@ -180,6 +190,57 @@ class BackendApiService {
               e.map((key, value) => MapEntry(key.toString(), value)),
             ))
         .toList();
+  }
+
+  Future<DashboardOverviewResult> getDashboardOverview({
+    bool activeOnly = true,
+    int itemsPerPage = 50,
+    int maxPages = 10,
+    int lookAheadMinutes = 180,
+    int maxSlots = 40,
+  }) async {
+    final query = <String, String>{
+      'activeOnly': activeOnly.toString(),
+      'itemsPerPage': itemsPerPage.toString(),
+      'maxPages': maxPages.toString(),
+      'lookAheadMinutes': lookAheadMinutes.toString(),
+      'maxSlots': maxSlots.toString(),
+    };
+
+    final json = await _getJson('/dashboard/overview', query: query);
+    final data = json['data'];
+    if (data is! Map<String, dynamic>) {
+      return const DashboardOverviewResult(
+        classes: <ClassSummary>[],
+        reminders: <ReminderItem>[],
+      );
+    }
+
+    final classesRaw = data['classes'];
+    final remindersRaw = data['reminders'];
+
+    final classes = (classesRaw is List)
+        ? classesRaw
+            .whereType<Map>()
+            .map((e) => ClassSummary.fromJson(
+                  e.map((key, value) => MapEntry(key.toString(), value)),
+                ))
+            .toList()
+        : const <ClassSummary>[];
+
+    final reminders = (remindersRaw is List)
+        ? remindersRaw
+            .whereType<Map>()
+            .map((e) => ReminderItem.fromJson(
+                  e.map((key, value) => MapEntry(key.toString(), value)),
+                ))
+            .toList()
+        : const <ReminderItem>[];
+
+    return DashboardOverviewResult(
+      classes: classes,
+      reminders: reminders,
+    );
   }
 
   Future<PayrollResponse> getMonthlyPayroll({

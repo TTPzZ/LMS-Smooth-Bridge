@@ -1180,6 +1180,167 @@ export function createClassRouter(lmsService: LmsService): Router {
         }
     });
 
+    router.get('/dashboard/overview', async (req: Request, res: Response) => {
+        try {
+            const idTokenFromHeader = parseBearerToken(req.headers.authorization);
+            if (!idTokenFromHeader) {
+                res.status(401).json({
+                    success: false,
+                    error: 'Authorization header khong hop le',
+                    detail: 'Expected format: Bearer <id_token>'
+                });
+                return;
+            }
+
+            const itemsPerPage = parseIntegerInRange(
+                req.query.itemsPerPage,
+                env.DEFAULT_ITEMS_PER_PAGE,
+                1,
+                env.MAX_ITEMS_PER_PAGE
+            );
+            const maxPages = parseIntegerInRange(
+                req.query.maxPages,
+                env.DEFAULT_MAX_PAGES,
+                1,
+                env.MAX_MAX_PAGES
+            );
+            const activeOnly = parseBooleanQuery(req.query.activeOnly, true);
+            const lookAheadMinutes = parseIntegerInRange(
+                req.query.lookAheadMinutes,
+                env.DEFAULT_LOOKAHEAD_MINUTES,
+                1,
+                env.MAX_LOOKAHEAD_MINUTES
+            );
+            const maxSlots = parseIntegerInRange(
+                req.query.maxSlots,
+                env.DEFAULT_MAX_REMINDER_SLOTS,
+                1,
+                env.MAX_REMINDER_SLOTS
+            );
+            const now = new Date();
+            const nowMs = now.getTime();
+            const lookAheadUntilMs = nowMs + lookAheadMinutes * 60_000;
+            const principal = readPrincipal(idTokenFromHeader);
+
+            const {
+                classes,
+                fetchedPages,
+                totalRawClasses,
+                totalUniqueClasses
+            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader);
+
+            const filteredClasses = classes.filter((cls) => (activeOnly ? isRunningClass(cls, now) : true));
+            const classSummaries = filteredClasses.map((cls) => {
+                const students = collectStudentsForPrincipal(cls, principal);
+                const coTeachers = collectCoTeachers(cls, principal);
+                const slotsWithStart = (cls.slots || [])
+                    .flatMap((slot) => {
+                        const startMs = parseDateToMs(slot.startTime ?? slot.date);
+                        if (startMs === null) {
+                            return [];
+                        }
+                        return [{
+                            slot,
+                            startMs
+                        }];
+                    })
+                    .sort((a, b) => a.startMs - b.startMs);
+                const slotStartTimes = (cls.slots || [])
+                    .map((slot) => parseDateToMs(slot.startTime ?? slot.date))
+                    .filter((value): value is number => value !== null)
+                    .sort((a, b) => a - b);
+                const classStartDate = slotStartTimes.length > 0
+                    ? new Date(slotStartTimes[0]).toISOString()
+                    : null;
+                const upcomingWindows = getClassAttendanceWindows(cls, nowMs, principal)
+                    .filter((window) => window.attendanceCloseAtMs >= nowMs);
+                const nextAttendanceWindow = upcomingWindows.length > 0
+                    ? toPublicAttendanceWindow(upcomingWindows[0])
+                    : null;
+                const classEndDateMs = parseDateToMs(cls.endDate);
+                const isClassEnded = classEndDateMs !== null ? classEndDateMs < nowMs : false;
+                const nextCommentSlot = nextAttendanceWindow
+                    ? (cls.slots || []).find((slot) =>
+                        normalizeIdentity(slot._id) === normalizeIdentity(nextAttendanceWindow.slotId)
+                    )
+                    : null;
+                const currentWeekStartMs = getStartOfWeekMs(now);
+                const previousWeekStartMs = currentWeekStartMs - (7 * 24 * 60 * 60 * 1000);
+                const previousWeekSlots = slotsWithStart.filter((item) =>
+                    item.startMs >= previousWeekStartMs
+                    && item.startMs < currentWeekStartMs
+                );
+                const previousCommentSlot = previousWeekSlots.length > 0
+                    ? previousWeekSlots[previousWeekSlots.length - 1].slot
+                    : null;
+                const nextCommentContext = buildPublicCommentContext(cls, nextCommentSlot);
+                const previousCommentContext = buildPublicCommentContext(cls, previousCommentSlot);
+
+                return {
+                    classId: cls.id,
+                    className: cls.name,
+                    status: normalizeClassStatus(cls.status) ?? null,
+                    endDate: cls.endDate,
+                    classStartDate,
+                    classEndDate: cls.endDate ?? null,
+                    isClassEnded,
+                    totalStudents: students.length,
+                    students,
+                    totalCoTeachers: coTeachers.length,
+                    coTeachers,
+                    totalSlots: (cls.slots || []).length,
+                    nextAttendanceWindow,
+                    nextCommentContext,
+                    previousCommentContext
+                };
+            });
+
+            const windows = filteredClasses.flatMap((cls) => getClassAttendanceWindows(cls, nowMs, principal))
+                .filter((window) => window.attendanceCloseAtMs >= nowMs)
+                .filter((window) => window.attendanceOpenAtMs <= lookAheadUntilMs)
+                .sort((a, b) => {
+                    if (a.attendanceOpenAtMs !== b.attendanceOpenAtMs) {
+                        return a.attendanceOpenAtMs - b.attendanceOpenAtMs;
+                    }
+                    return a.className.localeCompare(b.className);
+                });
+            const reminders = windows.slice(0, maxSlots).map((window) => toPublicAttendanceWindow(window));
+
+            res.json({
+                success: true,
+                data: {
+                    classes: classSummaries,
+                    reminders
+                },
+                meta: {
+                    now: now.toISOString(),
+                    lookAheadMinutes,
+                    lookAheadUntil: new Date(lookAheadUntilMs).toISOString(),
+                    maxSlots,
+                    fetchedPages,
+                    itemsPerPage,
+                    maxPages,
+                    activeOnly,
+                    totalRawClasses,
+                    totalUniqueClasses,
+                    scannedClasses: filteredClasses.length,
+                    returnedClasses: classSummaries.length,
+                    matchedSlots: windows.length,
+                    returnedSlots: reminders.length
+                }
+            });
+        } catch (error: any) {
+            const statusCode = error?.statusCode || error?.response?.status || 500;
+            const detail = error?.response?.data || error?.message;
+            console.error('Loi:', detail);
+            res.status(statusCode).json({
+                success: false,
+                error: 'Loi ket noi API',
+                detail
+            });
+        }
+    });
+
     router.get('/attendance/slot/comments', async (req: Request, res: Response) => {
         try {
             const idTokenFromHeader = parseBearerToken(req.headers.authorization);

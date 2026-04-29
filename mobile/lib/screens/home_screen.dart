@@ -61,11 +61,23 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
+class _DashboardOverviewBundle {
+  final List<ClassSummary> classes;
+  final List<ReminderItem> reminders;
+
+  const _DashboardOverviewBundle({
+    required this.classes,
+    required this.reminders,
+  });
+}
+
 class _HomeScreenState extends State<HomeScreen> {
   static const Duration _classesCacheTtl = Duration(minutes: 20);
   static const Duration _remindersCacheTtl = Duration(minutes: 8);
   static const Duration _payrollCacheTtl = Duration(minutes: 20);
   static const Duration _tabSwitchDuration = Duration(milliseconds: 240);
+  static const int _overviewLookAheadMinutes = 24 * 60;
+  static const int _overviewMaxSlots = 60;
   static const String _pullHintHiddenPrefix = 'home.pull_hint_hidden_v1';
 
   late BackendApiService _api;
@@ -202,55 +214,53 @@ class _HomeScreenState extends State<HomeScreen> {
     return classes.where(_isRunningClassSummary).toList();
   }
 
-  Future<List<ClassSummary>> _loadClasses({
+  Future<_DashboardOverviewBundle> _loadClassesAndReminders({
     required String username,
     required bool forceNetwork,
   }) async {
+    List<ClassSummary>? cachedClasses;
+    List<ReminderItem>? cachedReminders;
+
     if (!forceNetwork) {
-      final cached = await _dashboardCache.loadClasses(
+      cachedClasses = await _dashboardCache.loadClasses(
         username: username,
         maxAge: _classesCacheTtl,
       );
-      if (cached != null) {
-        return _filterRunningClasses(cached);
-      }
-    }
-
-    final classes = await _api.getClasses(
-      activeOnly: true,
-    );
-    final runningClasses = _filterRunningClasses(classes);
-    await _dashboardCache.saveClasses(
-      username: username,
-      classes: runningClasses,
-    );
-    return runningClasses;
-  }
-
-  Future<List<ReminderItem>> _loadReminders({
-    required String username,
-    required bool forceNetwork,
-  }) async {
-    if (!forceNetwork) {
-      final cached = await _dashboardCache.loadReminders(
+      cachedReminders = await _dashboardCache.loadReminders(
         username: username,
         maxAge: _remindersCacheTtl,
       );
-      if (cached != null) {
-        return cached;
+
+      if (cachedClasses != null && cachedReminders != null) {
+        return _DashboardOverviewBundle(
+          classes: _filterRunningClasses(cachedClasses),
+          reminders: cachedReminders,
+        );
       }
     }
 
-    final reminders = await _api.getAttendanceReminders(
-      lookAheadMinutes: 7 * 24 * 60,
-      maxSlots: 200,
+    final overview = await _api.getDashboardOverview(
       activeOnly: true,
+      lookAheadMinutes: _overviewLookAheadMinutes,
+      maxSlots: _overviewMaxSlots,
+    );
+
+    final classes = _filterRunningClasses(overview.classes);
+    final reminders = overview.reminders;
+
+    await _dashboardCache.saveClasses(
+      username: username,
+      classes: classes,
     );
     await _dashboardCache.saveReminders(
       username: username,
       reminders: reminders,
     );
-    return reminders;
+
+    return _DashboardOverviewBundle(
+      classes: classes,
+      reminders: reminders,
+    );
   }
 
   Future<PayrollResponse> _loadPayroll({
@@ -285,19 +295,18 @@ class _HomeScreenState extends State<HomeScreen> {
   void _setFutures({required bool forceNetwork}) {
     _clearClassesPageComputedCache();
     final username = _session.username.trim().toLowerCase();
+    final overviewFuture = _loadClassesAndReminders(
+      username: username,
+      forceNetwork: forceNetwork,
+    );
+
     setState(() {
-      _classesFuture = _loadClasses(
-        username: username,
-        forceNetwork: forceNetwork,
-      );
-      _remindersFuture = _loadReminders(
-        username: username,
-        forceNetwork: forceNetwork,
-      );
-      _classesAndRemindersFuture = Future.wait<Object>([
-        _classesFuture,
-        _remindersFuture,
-      ]);
+      _classesFuture = overviewFuture.then((value) => value.classes);
+      _remindersFuture = overviewFuture.then((value) => value.reminders);
+      _classesAndRemindersFuture = overviewFuture.then((value) => <Object>[
+            value.classes,
+            value.reminders,
+          ]);
       _payrollFuture = _loadPayroll(
         username: username,
         month: _selectedPayrollMonth,
@@ -322,11 +331,8 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _forceRefreshAll() async {
     _setFutures(forceNetwork: true);
     try {
-      await Future.wait([
-        _classesFuture,
-        _remindersFuture,
-        _payrollFuture,
-      ]);
+      await _classesAndRemindersFuture;
+      unawaited(_payrollFuture.then<void>((_) {}, onError: (_) {}));
     } catch (_) {
       // Errors are rendered by each FutureBuilder.
     }
