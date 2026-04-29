@@ -76,8 +76,8 @@ class _HomeScreenState extends State<HomeScreen> {
   static const Duration _remindersCacheTtl = Duration(minutes: 8);
   static const Duration _payrollCacheTtl = Duration(minutes: 20);
   static const Duration _tabSwitchDuration = Duration(milliseconds: 240);
-  static const int _overviewLookAheadMinutes = 24 * 60;
-  static const int _overviewMaxSlots = 60;
+  static const int _overviewLookAheadMinutes = 12 * 60;
+  static const int _overviewMaxSlots = 30;
   static const String _pullHintHiddenPrefix = 'home.pull_hint_hidden_v1';
 
   late BackendApiService _api;
@@ -243,6 +243,7 @@ class _HomeScreenState extends State<HomeScreen> {
       activeOnly: true,
       lookAheadMinutes: _overviewLookAheadMinutes,
       maxSlots: _overviewMaxSlots,
+      forceRefresh: forceNetwork,
     );
 
     final classes = _filterRunningClasses(overview.classes);
@@ -307,12 +308,12 @@ class _HomeScreenState extends State<HomeScreen> {
             value.classes,
             value.reminders,
           ]);
-      _payrollFuture = _loadPayroll(
-        username: username,
-        month: _selectedPayrollMonth,
-        year: _selectedPayrollYear,
-        forceNetwork: forceNetwork,
-      );
+      _payrollFuture = overviewFuture.then((_) => _loadPayroll(
+            username: username,
+            month: _selectedPayrollMonth,
+            year: _selectedPayrollYear,
+            forceNetwork: forceNetwork,
+          ));
     });
   }
 

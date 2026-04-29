@@ -198,6 +198,7 @@ class BackendApiService {
     int maxPages = 10,
     int lookAheadMinutes = 180,
     int maxSlots = 40,
+    bool forceRefresh = false,
   }) async {
     final query = <String, String>{
       'activeOnly': activeOnly.toString(),
@@ -205,6 +206,7 @@ class BackendApiService {
       'maxPages': maxPages.toString(),
       'lookAheadMinutes': lookAheadMinutes.toString(),
       'maxSlots': maxSlots.toString(),
+      'forceRefresh': forceRefresh.toString(),
     };
 
     final json = await _getJson('/dashboard/overview', query: query);

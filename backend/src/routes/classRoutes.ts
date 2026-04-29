@@ -27,6 +27,25 @@ import {
 } from '../types/lms';
 import { decodeJwtPayload } from '../utils/jwt';
 
+type DashboardOverviewResponse = {
+    classes: any[];
+    reminders: any[];
+    meta: Record<string, unknown>;
+};
+
+type DashboardOverviewCacheEntry = {
+    payload: DashboardOverviewResponse;
+    generatedAtMs: number;
+    freshUntilMs: number;
+    staleUntilMs: number;
+};
+
+const DASHBOARD_OVERVIEW_CACHE_TTL_MS = 90_000;
+const DASHBOARD_OVERVIEW_CACHE_STALE_MS = 20 * 60_000;
+const DASHBOARD_OVERVIEW_CACHE_MAX_ENTRIES = 250;
+const dashboardOverviewCache = new Map<string, DashboardOverviewCacheEntry>();
+const dashboardOverviewCacheInFlight = new Map<string, Promise<DashboardOverviewCacheEntry>>();
+
 function collectStudentsForPrincipal(
     cls: LmsClassRecord,
     principal?: ReminderPrincipal | null
@@ -235,6 +254,49 @@ function readPrincipal(idTokenFromHeader: string | null | undefined): ReminderPr
             ? tokenPayload.name.trim()
             : null
     };
+}
+
+function buildDashboardOverviewCacheKey(params: {
+    teacherId: string;
+    username: string;
+    activeOnly: boolean;
+    itemsPerPage: number;
+    maxPages: number;
+    lookAheadMinutes: number;
+    maxSlots: number;
+}): string {
+    return [
+        params.teacherId,
+        params.username,
+        params.activeOnly ? '1' : '0',
+        String(params.itemsPerPage),
+        String(params.maxPages),
+        String(params.lookAheadMinutes),
+        String(params.maxSlots)
+    ].join('|');
+}
+
+function pruneDashboardOverviewCache(nowMs: number): void {
+    dashboardOverviewCache.forEach((entry, key) => {
+        if (entry.staleUntilMs <= nowMs) {
+            dashboardOverviewCache.delete(key);
+        }
+    });
+
+    if (dashboardOverviewCache.size <= DASHBOARD_OVERVIEW_CACHE_MAX_ENTRIES) {
+        return;
+    }
+
+    const sorted = Array.from(dashboardOverviewCache.entries())
+        .sort((a, b) => a[1].generatedAtMs - b[1].generatedAtMs);
+    const removeCount = dashboardOverviewCache.size - DASHBOARD_OVERVIEW_CACHE_MAX_ENTRIES;
+    for (let index = 0; index < removeCount; index += 1) {
+        const item = sorted[index];
+        if (!item) {
+            break;
+        }
+        dashboardOverviewCache.delete(item[0]);
+    }
 }
 
 const SLOT_ATTENDANCE_STATUSES: LmsSlotAttendanceStatus[] = [
@@ -959,6 +1021,180 @@ function buildPublicCommentContext(
 export function createClassRouter(lmsService: LmsService): Router {
     const router = Router();
 
+    const buildDashboardOverview = async (params: {
+        idTokenFromHeader: string;
+        principal: ReminderPrincipal;
+        itemsPerPage: number;
+        maxPages: number;
+        activeOnly: boolean;
+        lookAheadMinutes: number;
+        maxSlots: number;
+    }): Promise<DashboardOverviewResponse> => {
+        const {
+            idTokenFromHeader,
+            principal,
+            itemsPerPage,
+            maxPages,
+            activeOnly,
+            lookAheadMinutes,
+            maxSlots
+        } = params;
+        const now = new Date();
+        const nowMs = now.getTime();
+        const lookAheadUntilMs = nowMs + lookAheadMinutes * 60_000;
+
+        const {
+            classes,
+            fetchedPages,
+            totalRawClasses,
+            totalUniqueClasses
+        } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader);
+
+        const filteredClasses = classes.filter((cls) => (activeOnly ? isRunningClass(cls, now) : true));
+        const classSummaries = filteredClasses.map((cls) => {
+            const students = collectStudentsForPrincipal(cls, principal);
+            const coTeachers = collectCoTeachers(cls, principal);
+            const slotsWithStart = (cls.slots || [])
+                .flatMap((slot) => {
+                    const startMs = parseDateToMs(slot.startTime ?? slot.date);
+                    if (startMs === null) {
+                        return [];
+                    }
+                    return [{
+                        slot,
+                        startMs
+                    }];
+                })
+                .sort((a, b) => a.startMs - b.startMs);
+            const slotStartTimes = (cls.slots || [])
+                .map((slot) => parseDateToMs(slot.startTime ?? slot.date))
+                .filter((value): value is number => value !== null)
+                .sort((a, b) => a - b);
+            const classStartDate = slotStartTimes.length > 0
+                ? new Date(slotStartTimes[0]).toISOString()
+                : null;
+            const upcomingWindows = getClassAttendanceWindows(cls, nowMs, principal)
+                .filter((window) => window.attendanceCloseAtMs >= nowMs);
+            const nextAttendanceWindow = upcomingWindows.length > 0
+                ? toPublicAttendanceWindow(upcomingWindows[0])
+                : null;
+            const classEndDateMs = parseDateToMs(cls.endDate);
+            const isClassEnded = classEndDateMs !== null ? classEndDateMs < nowMs : false;
+            const nextCommentSlot = nextAttendanceWindow
+                ? (cls.slots || []).find((slot) =>
+                    normalizeIdentity(slot._id) === normalizeIdentity(nextAttendanceWindow.slotId)
+                )
+                : null;
+            const currentWeekStartMs = getStartOfWeekMs(now);
+            const previousWeekStartMs = currentWeekStartMs - (7 * 24 * 60 * 60 * 1000);
+            const previousWeekSlots = slotsWithStart.filter((item) =>
+                item.startMs >= previousWeekStartMs
+                && item.startMs < currentWeekStartMs
+            );
+            const previousCommentSlot = previousWeekSlots.length > 0
+                ? previousWeekSlots[previousWeekSlots.length - 1].slot
+                : null;
+            const nextCommentContext = buildPublicCommentContext(cls, nextCommentSlot);
+            const previousCommentContext = buildPublicCommentContext(cls, previousCommentSlot);
+
+            return {
+                classId: cls.id,
+                className: cls.name,
+                status: normalizeClassStatus(cls.status) ?? null,
+                endDate: cls.endDate,
+                classStartDate,
+                classEndDate: cls.endDate ?? null,
+                isClassEnded,
+                totalStudents: students.length,
+                students,
+                totalCoTeachers: coTeachers.length,
+                coTeachers,
+                totalSlots: (cls.slots || []).length,
+                nextAttendanceWindow,
+                nextCommentContext,
+                previousCommentContext
+            };
+        });
+
+        const windows = filteredClasses.flatMap((cls) => getClassAttendanceWindows(cls, nowMs, principal))
+            .filter((window) => window.attendanceCloseAtMs >= nowMs)
+            .filter((window) => window.attendanceOpenAtMs <= lookAheadUntilMs)
+            .sort((a, b) => {
+                if (a.attendanceOpenAtMs !== b.attendanceOpenAtMs) {
+                    return a.attendanceOpenAtMs - b.attendanceOpenAtMs;
+                }
+                return a.className.localeCompare(b.className);
+            });
+        const reminders = windows.slice(0, maxSlots).map((window) => toPublicAttendanceWindow(window));
+
+        return {
+            classes: classSummaries,
+            reminders,
+            meta: {
+                now: now.toISOString(),
+                lookAheadMinutes,
+                lookAheadUntil: new Date(lookAheadUntilMs).toISOString(),
+                maxSlots,
+                fetchedPages,
+                itemsPerPage,
+                maxPages,
+                activeOnly,
+                totalRawClasses,
+                totalUniqueClasses,
+                scannedClasses: filteredClasses.length,
+                returnedClasses: classSummaries.length,
+                matchedSlots: windows.length,
+                returnedSlots: reminders.length
+            }
+        };
+    };
+
+    const loadAndCacheDashboardOverview = async (params: {
+        cacheKey: string;
+        idTokenFromHeader: string;
+        principal: ReminderPrincipal;
+        itemsPerPage: number;
+        maxPages: number;
+        activeOnly: boolean;
+        lookAheadMinutes: number;
+        maxSlots: number;
+    }): Promise<DashboardOverviewCacheEntry> => {
+        const { cacheKey } = params;
+        const inFlight = dashboardOverviewCacheInFlight.get(cacheKey);
+        if (inFlight) {
+            return inFlight;
+        }
+
+        const promise = (async () => {
+            const payload = await buildDashboardOverview({
+                idTokenFromHeader: params.idTokenFromHeader,
+                principal: params.principal,
+                itemsPerPage: params.itemsPerPage,
+                maxPages: params.maxPages,
+                activeOnly: params.activeOnly,
+                lookAheadMinutes: params.lookAheadMinutes,
+                maxSlots: params.maxSlots
+            });
+            const nowMs = Date.now();
+            const entry: DashboardOverviewCacheEntry = {
+                payload,
+                generatedAtMs: nowMs,
+                freshUntilMs: nowMs + DASHBOARD_OVERVIEW_CACHE_TTL_MS,
+                staleUntilMs: nowMs + DASHBOARD_OVERVIEW_CACHE_STALE_MS
+            };
+            dashboardOverviewCache.set(cacheKey, entry);
+            pruneDashboardOverviewCache(nowMs);
+            return entry;
+        })();
+
+        dashboardOverviewCacheInFlight.set(cacheKey, promise);
+        try {
+            return await promise;
+        } finally {
+            dashboardOverviewCacheInFlight.delete(cacheKey);
+        }
+    };
+
     router.get('/classes', async (req: Request, res: Response) => {
         try {
             const idTokenFromHeader = parseBearerToken(req.headers.authorization);
@@ -1217,116 +1453,99 @@ export function createClassRouter(lmsService: LmsService): Router {
                 1,
                 env.MAX_REMINDER_SLOTS
             );
-            const now = new Date();
-            const nowMs = now.getTime();
-            const lookAheadUntilMs = nowMs + lookAheadMinutes * 60_000;
             const principal = readPrincipal(idTokenFromHeader);
-
-            const {
-                classes,
-                fetchedPages,
-                totalRawClasses,
-                totalUniqueClasses
-            } = await lmsService.fetchUniqueClasses(itemsPerPage, maxPages, idTokenFromHeader);
-
-            const filteredClasses = classes.filter((cls) => (activeOnly ? isRunningClass(cls, now) : true));
-            const classSummaries = filteredClasses.map((cls) => {
-                const students = collectStudentsForPrincipal(cls, principal);
-                const coTeachers = collectCoTeachers(cls, principal);
-                const slotsWithStart = (cls.slots || [])
-                    .flatMap((slot) => {
-                        const startMs = parseDateToMs(slot.startTime ?? slot.date);
-                        if (startMs === null) {
-                            return [];
-                        }
-                        return [{
-                            slot,
-                            startMs
-                        }];
-                    })
-                    .sort((a, b) => a.startMs - b.startMs);
-                const slotStartTimes = (cls.slots || [])
-                    .map((slot) => parseDateToMs(slot.startTime ?? slot.date))
-                    .filter((value): value is number => value !== null)
-                    .sort((a, b) => a - b);
-                const classStartDate = slotStartTimes.length > 0
-                    ? new Date(slotStartTimes[0]).toISOString()
-                    : null;
-                const upcomingWindows = getClassAttendanceWindows(cls, nowMs, principal)
-                    .filter((window) => window.attendanceCloseAtMs >= nowMs);
-                const nextAttendanceWindow = upcomingWindows.length > 0
-                    ? toPublicAttendanceWindow(upcomingWindows[0])
-                    : null;
-                const classEndDateMs = parseDateToMs(cls.endDate);
-                const isClassEnded = classEndDateMs !== null ? classEndDateMs < nowMs : false;
-                const nextCommentSlot = nextAttendanceWindow
-                    ? (cls.slots || []).find((slot) =>
-                        normalizeIdentity(slot._id) === normalizeIdentity(nextAttendanceWindow.slotId)
-                    )
-                    : null;
-                const currentWeekStartMs = getStartOfWeekMs(now);
-                const previousWeekStartMs = currentWeekStartMs - (7 * 24 * 60 * 60 * 1000);
-                const previousWeekSlots = slotsWithStart.filter((item) =>
-                    item.startMs >= previousWeekStartMs
-                    && item.startMs < currentWeekStartMs
-                );
-                const previousCommentSlot = previousWeekSlots.length > 0
-                    ? previousWeekSlots[previousWeekSlots.length - 1].slot
-                    : null;
-                const nextCommentContext = buildPublicCommentContext(cls, nextCommentSlot);
-                const previousCommentContext = buildPublicCommentContext(cls, previousCommentSlot);
-
-                return {
-                    classId: cls.id,
-                    className: cls.name,
-                    status: normalizeClassStatus(cls.status) ?? null,
-                    endDate: cls.endDate,
-                    classStartDate,
-                    classEndDate: cls.endDate ?? null,
-                    isClassEnded,
-                    totalStudents: students.length,
-                    students,
-                    totalCoTeachers: coTeachers.length,
-                    coTeachers,
-                    totalSlots: (cls.slots || []).length,
-                    nextAttendanceWindow,
-                    nextCommentContext,
-                    previousCommentContext
-                };
+            const forceRefresh = parseBooleanQuery(req.query.forceRefresh, false);
+            const cacheKey = buildDashboardOverviewCacheKey({
+                teacherId: normalizeIdentity(principal.teacherId),
+                username: normalizeIdentity(principal.username),
+                activeOnly,
+                itemsPerPage,
+                maxPages,
+                lookAheadMinutes,
+                maxSlots
             });
+            const nowMs = Date.now();
 
-            const windows = filteredClasses.flatMap((cls) => getClassAttendanceWindows(cls, nowMs, principal))
-                .filter((window) => window.attendanceCloseAtMs >= nowMs)
-                .filter((window) => window.attendanceOpenAtMs <= lookAheadUntilMs)
-                .sort((a, b) => {
-                    if (a.attendanceOpenAtMs !== b.attendanceOpenAtMs) {
-                        return a.attendanceOpenAtMs - b.attendanceOpenAtMs;
+            if (!forceRefresh) {
+                const cached = dashboardOverviewCache.get(cacheKey);
+                if (cached && cached.freshUntilMs > nowMs) {
+                    res.json({
+                        success: true,
+                        data: {
+                            classes: cached.payload.classes,
+                            reminders: cached.payload.reminders
+                        },
+                        meta: {
+                            ...cached.payload.meta,
+                            cache: {
+                                hit: true,
+                                stale: false,
+                                ageMs: Math.max(0, nowMs - cached.generatedAtMs)
+                            }
+                        }
+                    });
+                    return;
+                }
+
+                if (cached && cached.staleUntilMs > nowMs) {
+                    if (!dashboardOverviewCacheInFlight.has(cacheKey)) {
+                        void loadAndCacheDashboardOverview({
+                            cacheKey,
+                            idTokenFromHeader,
+                            principal,
+                            itemsPerPage,
+                            maxPages,
+                            activeOnly,
+                            lookAheadMinutes,
+                            maxSlots
+                        }).catch((error: any) => {
+                            console.error('Dashboard overview background refresh loi:', error?.message || error);
+                        });
                     }
-                    return a.className.localeCompare(b.className);
-                });
-            const reminders = windows.slice(0, maxSlots).map((window) => toPublicAttendanceWindow(window));
+
+                    res.json({
+                        success: true,
+                        data: {
+                            classes: cached.payload.classes,
+                            reminders: cached.payload.reminders
+                        },
+                        meta: {
+                            ...cached.payload.meta,
+                            cache: {
+                                hit: true,
+                                stale: true,
+                                ageMs: Math.max(0, nowMs - cached.generatedAtMs)
+                            }
+                        }
+                    });
+                    return;
+                }
+            }
+
+            const refreshed = await loadAndCacheDashboardOverview({
+                cacheKey,
+                idTokenFromHeader,
+                principal,
+                itemsPerPage,
+                maxPages,
+                activeOnly,
+                lookAheadMinutes,
+                maxSlots
+            });
 
             res.json({
                 success: true,
                 data: {
-                    classes: classSummaries,
-                    reminders
+                    classes: refreshed.payload.classes,
+                    reminders: refreshed.payload.reminders
                 },
                 meta: {
-                    now: now.toISOString(),
-                    lookAheadMinutes,
-                    lookAheadUntil: new Date(lookAheadUntilMs).toISOString(),
-                    maxSlots,
-                    fetchedPages,
-                    itemsPerPage,
-                    maxPages,
-                    activeOnly,
-                    totalRawClasses,
-                    totalUniqueClasses,
-                    scannedClasses: filteredClasses.length,
-                    returnedClasses: classSummaries.length,
-                    matchedSlots: windows.length,
-                    returnedSlots: reminders.length
+                    ...refreshed.payload.meta,
+                    cache: {
+                        hit: false,
+                        stale: false,
+                        ageMs: 0
+                    }
                 }
             });
         } catch (error: any) {
