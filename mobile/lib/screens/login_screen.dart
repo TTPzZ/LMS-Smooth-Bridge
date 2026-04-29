@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../config/app_config.dart';
 import '../models/auth_models.dart';
 import '../services/auth_session_manager.dart';
+import '../services/public_app_config_service.dart';
 import '../services/secure_store_service.dart';
 import '../theme/app_theme.dart';
 
@@ -35,6 +36,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final SecureStoreService _secureStore = const SecureStoreService();
+  final PublicAppConfigService _publicAppConfigService =
+      PublicAppConfigService();
   late final TextEditingController _emailController;
   late final TextEditingController _passwordController;
   late final FocusNode _emailFocusNode;
@@ -103,6 +106,18 @@ class _LoginScreenState extends State<LoginScreen> {
       return '';
     }
     return email.substring(0, atIndex);
+  }
+
+  Future<String> _resolveFirebaseApiKey(String backendBaseUrl) async {
+    if (AppConfig.hasFirebaseApiKey) {
+      return AppConfig.firebaseApiKey.trim();
+    }
+
+    try {
+      return await _publicAppConfigService.fetchFirebaseApiKey(backendBaseUrl);
+    } catch (_) {
+      return '';
+    }
   }
 
   Future<void> _loadRememberedCredentials() async {
@@ -265,21 +280,24 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorText = null;
     });
 
-    if (!AppConfig.hasFirebaseApiKey) {
+    final backendBaseUrl = AppConfig.apiBaseUrl.trim();
+    final firebaseApiKey = await _resolveFirebaseApiKey(backendBaseUrl);
+    if (firebaseApiKey.isEmpty) {
       setState(() {
         _isSubmitting = false;
-        _errorText = 'Thiếu Firebase API key trong cấu hình app.';
+        _errorText =
+            'Thieu Firebase API key. Hay set FIREBASE_API_KEY o backend/.env hoac --dart-define khi build app.';
       });
       return;
     }
 
     try {
       final session = await widget.sessionManager.signIn(
-        apiKey: AppConfig.firebaseApiKey.trim(),
+        apiKey: firebaseApiKey,
         email: email,
         username: username,
         password: _passwordController.text,
-        backendBaseUrl: AppConfig.apiBaseUrl.trim(),
+        backendBaseUrl: backendBaseUrl,
       );
 
       await _saveRememberedCredentials(
@@ -645,3 +663,4 @@ class _SoftOrb extends StatelessWidget {
     );
   }
 }
+

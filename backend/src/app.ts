@@ -62,6 +62,14 @@ async function buildAppContext(): Promise<AppContext> {
     app.use('/api', createDeviceRouter(deviceService));
     app.use('/api', createNotifierRouter(notifierService));
     app.use('/api', createPayrollRouter(payrollService));
+    app.get('/api/public-config', (_req, res) => {
+        res.json({
+            success: true,
+            data: {
+                firebaseApiKey: env.FIREBASE_API_KEY
+            }
+        });
+    });
 
     app.get('/', (_req, res) => {
         res.status(200).json({
